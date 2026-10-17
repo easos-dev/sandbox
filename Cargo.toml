@@ -1,0 +1,37 @@
+[package]
+name = "easos-sandbox"
+version = "0.1.0"
+edition = "2021"
+description = "EasOS 助手的沙箱运行器：以命名空间账号执行命令，文件只在对象存储与沙箱之间直接流动"
+
+[[bin]]
+name = "sandbox-runner"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+bytes = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# 秒传持有证明：HMAC-SHA256(key = nonce, 段字节)，与 File 模块同一组 RustCrypto 实现与版本。
+hmac = "0.12"
+sha2 = "0.10"
+md-5 = "0.10.6"
+# HTTP/1.1 服务与 SDK、GUI 同一栈：hyper 只当“会说 HTTP 的库”用，没有框架与代码生成。
+http = "1"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+# 账号查找、不跟随符号链接的逐级 openat、切换账号、按进程组发信号；版本与 SDK 一致。
+nix = { version = "0.29", features = ["fs", "user", "signal", "process"] }
+# 执行号与临时文件名的随机来源（OsRng），与 File 模块同一选型。
+rand_core = { version = "0.6", features = ["getrandom"] }
+# 下载与上传：使用部署环境的受信根（管理员装的企业 CA 也认），rustls 静态链接；stream 用于边收边写、边读边发。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "process", "signal", "time", "sync", "fs"] }
+
+# release 构建保留符号表与行号表：崩溃回溯要靠它们（与仓库其他 Rust 工程一致）。
+[profile.release]
+strip = false
+debug = "line-tables-only"
