@@ -3,7 +3,8 @@
 命令账号的公网可达 / 私网拒绝 / 运行器端口拒绝、运行器已收回 NET_ADMIN、LibreOffice 转 PDF、超时终止、删会话；
 打印镜像大小与每步耗时，最后删容器。
 
-用法：python3 scripts/smoke.py [镜像名]（默认 easos-sandbox:dev）。需要本机 docker 与宿主机 18000 端口空闲。
+用法：python3 scripts/smoke.py [镜像名] [-- 额外的 docker run 参数…]（镜像默认 easos-sandbox:dev）。
+需要本机 docker 与宿主机 18000 端口空闲。`--` 之后的参数原样插在 `docker run` 的镜像名之前（例如 --network、-v）。
 """
 
 import json
@@ -14,7 +15,10 @@ import time
 import urllib.error
 import urllib.request
 
-IMAGE = sys.argv[1] if len(sys.argv) > 1 else "easos-sandbox:dev"
+ARGS = sys.argv[1:]
+EXTRA_RUN_ARGS = ARGS[ARGS.index("--") + 1 :] if "--" in ARGS else []
+POSITIONAL = ARGS[: ARGS.index("--")] if "--" in ARGS else ARGS
+IMAGE = POSITIONAL[0] if POSITIONAL else "easos-sandbox:dev"
 NAME = f"easos-sandbox-smoke-{os.getpid()}"
 KEY = f"smoke-{int(time.time())}"
 # 宿主机上映射的端口；容器内固定 8000。
@@ -45,16 +49,16 @@ def call(method: str, path: str, body=None, ns: str = NS):
         return error.code, json.loads(error.read())
 
 
-def run(command: str, timeout: int | None = None):
+def run(command: str, timeout: int | None = None, ns: str = NS):
     """像助手客户端那样执行：开始后按 offset 轮询到结束，返回（终态, 拼起来的输出）。"""
     body = {"conversation_id": CONV, "command": command}
     if timeout:
         body["timeout"] = timeout
-    status, view = call("POST", "/execute?wait=30", body)
+    status, view = call("POST", "/execute?wait=30", body, ns=ns)
     assert status == 200, view
     output = "".join(item["data"] for item in view["output"])
     while view["status"] == "running":
-        status, view = call("GET", f"/execute/{view['id']}/status?wait=30&offset={view['next_offset']}")
+        status, view = call("GET", f"/execute/{view['id']}/status?wait=30&offset={view['next_offset']}", ns=ns)
         assert status == 200, view
         output += "".join(item["data"] for item in view["output"])
     return view, output
@@ -70,7 +74,7 @@ def main():
     subprocess.run(["docker", "rm", "-f", NAME], capture_output=True)
     sh(
         "docker", "run", "-d", "--name", NAME, "--cap-add", "NET_ADMIN",
-        "-p", f"127.0.0.1:{PORT}:8000", "-e", f"SANDBOX_API_KEY={KEY}", IMAGE,
+        "-p", f"127.0.0.1:{PORT}:8000", "-e", f"SANDBOX_API_KEY={KEY}", *EXTRA_RUN_ARGS, IMAGE,
     )
     try:
         for _ in range(100):
@@ -105,22 +109,22 @@ def main():
         status, other = call("POST", "/files/stat", {"conversation_id": CONV, "path": "out/a.txt"}, ns="user-other")
         check("别的命名空间看不到这个会话", status == 404 and other.get("error") == "conversation_not_found", json.dumps(other, ensure_ascii=False))
         # 以 user-other 的身份试读 user-smoke 的家目录。
-        status, peek = call("POST", "/execute?wait=30", {"conversation_id": CONV, "command": f"ls /home/{NS}/ >/dev/null 2>&1 && echo readable || echo denied"}, ns="user-other")
-        while peek["status"] == "running":
-            status, peek = call("GET", f"/execute/{peek['id']}/status?wait=30&offset={peek['next_offset']}", ns="user-other")
-        peek_out = "".join(item["data"] for item in peek["output"])
-        check("别的账号读不到这个家目录", "denied" in peek_out, peek_out.strip())
+        view, peek_out = run(f"ls /home/{NS}/ >/dev/null 2>&1 && echo readable || echo denied", ns="user-other")
+        check("别的账号读不到这个家目录", peek_out.strip() == "denied", peek_out.strip())
 
         started = time.time()
         view, out = run("curl -sS -o /dev/null -w '%{http_code}' -m 20 https://example.com/ || echo curl-failed")
         check("命令账号可访问公网", out.strip() in ("200", "301", "302"), f"{out.strip()}  {time.time() - started:.1f}s")
+        # 被 REJECT 的连接在毫秒内失败（curl 退出码 7）；没有规则时会等到 5 秒超时（退出码 28）。
         started = time.time()
-        view, out = run("curl -sS -o /dev/null -m 5 http://10.255.255.1/ 2>&1 || true")
-        check("命令账号访问私网被拒", "refused" in out.lower() or "unreachable" in out.lower(), f"{out.strip()}  {time.time() - started:.1f}s")
-        view, out = run("curl -sS -m 5 http://127.0.0.1:8000/healthz 2>&1 || true")
-        check("命令账号访问运行器端口被拒", '"ok"' not in out, out.strip())
+        view, out = run("curl -sS -o /dev/null -m 5 http://10.255.255.1/ 2>&1; echo exit=$?")
+        elapsed = time.time() - started
+        check("命令账号访问私网被拒", "exit=7" in out and elapsed < 2, f"{out.strip().replace(chr(10), ' | ')}  {elapsed:.1f}s")
+        view, out = run("curl -sS -m 5 http://127.0.0.1:8000/healthz 2>&1; echo exit=$?")
+        check("命令账号访问运行器端口被拒", '"ok"' not in out and "exit=7" in out, out.strip().replace("\n", " | "))
         rules = sh("docker", "exec", NAME, "iptables", "-S", "OUTPUT")
         check("出站规则只对非 root 生效", "! --uid-owner 0 -j SANDBOX_CMD" in rules, rules.strip())
+        print("SANDBOX_CMD 链：\n" + sh("docker", "exec", NAME, "iptables", "-S", "SANDBOX_CMD").strip())
         pid = sh("docker", "exec", NAME, "pgrep", "-x", "sandbox-runner").strip().split()[0]
         bnd = sh("docker", "exec", NAME, "grep", "CapBnd", f"/proc/{pid}/status").split()[1]
         check("运行器已收回 NET_ADMIN（CapBnd 第 12 位为 0）", int(bnd, 16) & (1 << 12) == 0, f"CapBnd={bnd}")
