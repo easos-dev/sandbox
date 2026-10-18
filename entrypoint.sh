@@ -4,6 +4,7 @@
 # 规则按发包进程的 uid 区分：
 #   root（uid 0，运行器自己）不受限——它只连助手交来的下载/上传地址，其中可能有内网的对象存储。
 #   其他 uid（命名空间账号，模型的命令）走 SANDBOX_CMD 链：
+#     0. 已建立连接上的包放行：新连接的第一个包仍按下面几条判断，这一条只放过已经被允许建立的连接（见 setup_chain 里的说明）。
 #     1. 禁止访问本机上运行器的端口（密钥不在命令环境里，这是第二道锁）；其余回环流量放行，
 #        模型自己在沙箱里起的本地服务照常可用。所以拒绝清单里不放 127.0.0.0/8。
 #     2. 拒绝清单非空时，放行 /etc/resolv.conf 里的 DNS（Docker 内嵌 DNS 127.0.0.11 本就在回环；
@@ -65,6 +66,14 @@ setup_chain() {
     local ipt="$1"; shift
     local reject_with="$1"; shift
     "$ipt" -N SANDBOX_CMD 2>/dev/null || "$ipt" -F SANDBOX_CMD
+    # 已建立连接上的包直接放行。运行器（root）关掉一个连接后，内核还要从这个已没有属主的套接字把剩下的应答、FIN 与重传发完；
+    # owner 匹配把没有属主的包当成“不是 root”，于是送进本链、按拒绝清单拒掉，客户端停在半截应答上
+    # （请求带 Connection: close、应答超过初始拥塞窗口时必现，2026-10-19 在杭州部署实测停在 13135 字节）。
+    # 命令账号新建连接的第一个包是 NEW 状态，照常走下面的规则，所以这一条不放宽对命令账号的限制。
+    # 宿主没加载 conntrack 匹配模块时只警告：运行器照常工作，只是带 Connection: close 的大应答可能收不全。
+    if ! "$ipt" -A SANDBOX_CMD -m conntrack --ctstate ESTABLISHED -j RETURN 2>/dev/null; then
+        echo "警告：$ipt 不支持 conntrack 匹配（宿主未加载 xt_conntrack？），运行器关闭连接后剩余的应答可能被拦" >&2
+    fi
     "$ipt" -A SANDBOX_CMD -o lo -p tcp --dport "$PORT" -j REJECT --reject-with tcp-reset
     "$ipt" -A SANDBOX_CMD -o lo -j RETURN
     if [ $# -gt 0 ]; then
