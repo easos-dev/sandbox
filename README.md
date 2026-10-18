@@ -56,16 +56,20 @@ EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件�
 ## 部署（Docker）
 
 ```sh
+# 密钥只放在仓库之外、只有本人可读的文件里，不打印、不进命令行。
+umask 077 && mkdir -p ~/.easos-sandbox && python3 -c 'import secrets;print(secrets.token_urlsafe(32),end="")' > ~/.easos-sandbox/key
 docker build -t easos-sandbox .
 docker run -d --name easos-sandbox --restart unless-stopped \
   --network easos-db -p 127.0.0.1:8003:8000 \
   --cap-add NET_ADMIN \
   -v easos-sandbox-home:/home \
-  -e SANDBOX_API_KEY=<密钥> \
+  -v "$HOME/.easos-sandbox/key:/root/.sandbox-key:ro" \
+  -e SANDBOX_API_KEY_FILE=/root/.sandbox-key \
   --memory 4g --cpus 2 \
   easos-sandbox
 ```
 
+- **密钥文件必须挂在 `/root` 下。** Docker Desktop（macOS / Windows）的文件共享不执行宿主文件的权限位：挂进容器的 600 文件显示为 `root:root 600`，但任何 uid 都能读（2026-10-18 实测）。挂在 `/root` 下时，容器自己文件系统上 `/root` 的 700 挡住命令账号。入口脚本启动时以 nobody 身份试读密钥文件，读得到就拒绝启动。用 `-e SANDBOX_API_KEY=<密钥>` 也安全（命令账号读不到 root 进程的环境），只是值会出现在 `docker inspect` 里。
 - `--cap-add NET_ADMIN` 只在启动时用来写 iptables 规则，入口脚本随即用 `capsh` 把它从 bounding set 里去掉；没有这个权限时只打警告照常启动，命令账号的网络不受限。
 - 容器以 root 跑运行器（要 `useradd` 与切换账号），`tini` 做 PID 1 回收孤儿进程。
 - 助手配置里填 `http://easos-sandbox:8000` 与密钥。三个 EasOS 环境共用一个沙箱时和 Open Terminal 的接法一样：挂到 `easos-db` 网络，`scripts/env.py` 再把它接进两端环境的网络。

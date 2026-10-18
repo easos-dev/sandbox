@@ -17,6 +17,17 @@ if [ -z "${SANDBOX_API_KEY:-}" ] && [ -z "${SANDBOX_API_KEY_FILE:-}" ]; then
     exit 1
 fi
 
+# 密钥文件必须只有 root 读得到。Docker Desktop（macOS / Windows）的文件共享不执行宿主文件的权限位：
+# 挂进来的 600 文件在容器里显示为 root:root 600，但任何 uid 都能读（2026-10-18 实测）。所以密钥文件要挂在
+# 只有 root 能进的目录下（例如 /root/.sandbox-key），靠容器自己文件系统上 /root 的 700 挡住命令账号。
+# 这里以 nobody 的身份真读一次，读得到就拒绝启动，免得部署时挂错位置把密钥暴露给模型的命令。
+if [ -n "${SANDBOX_API_KEY_FILE:-}" ]; then
+    if setpriv --reuid=65534 --regid=65534 --clear-groups cat "$SANDBOX_API_KEY_FILE" >/dev/null 2>&1; then
+        echo "密钥文件 $SANDBOX_API_KEY_FILE 普通账号也读得到，拒绝启动：请挂在只有 root 能进的目录下（例如 /root/.sandbox-key）" >&2
+        exit 1
+    fi
+fi
+
 # 监听端口：取 SANDBOX_LISTEN 冒号后面的部分（默认 8000）。
 LISTEN="${SANDBOX_LISTEN:-0.0.0.0:8000}"
 PORT="${LISTEN##*:}"
