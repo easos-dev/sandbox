@@ -169,9 +169,16 @@ RUN fc-cache -f >/dev/null \
  && lualatex -interaction=batchmode zh.tex >/dev/null && lualatex -interaction=batchmode ja.tex >/dev/null \
  && rm -f /tmp/zh.* /tmp/ja.* \
  && test -d /var/lib/texmf/luatex-cache/generic/names
+# 工具文档（AI 在沙箱里 cat 它就知道有什么、怎么用）与两个配套脚本：font-specimen.py 生成字体样张，tools-check.sh 逐项核对。
+# 文档末尾的清单由冒烟按镜像逐项核对、并与本文件的安装列表比对，改安装列表时同步改 doc/镜像工具.md。
+# 复制整个 doc 目录再在 RUN 里取出工具文档：Docker 24 的 BuildKit 拒绝 COPY 源路径里的非 ASCII 字符
+# （2026-10-18 实测报 followpaths contains non-printable ASCII），目录名是 ASCII，里面的中文文件名不受限制。
+COPY doc /tmp/sandbox-doc
+COPY scripts/font-specimen.py scripts/tools-check.sh /usr/local/share/sandbox/
+RUN install -m 644 /tmp/sandbox-doc/镜像工具.md /usr/local/share/sandbox/TOOLS.md && rm -rf /tmp/sandbox-doc
 COPY --from=build /src/target/release/sandbox-runner /usr/local/bin/sandbox-runner
 COPY entrypoint.sh /usr/local/bin/sandbox-entrypoint
-RUN chmod 755 /usr/local/bin/sandbox-entrypoint /usr/local/bin/sandbox-runner
+RUN chmod 755 /usr/local/bin/sandbox-entrypoint /usr/local/bin/sandbox-runner /usr/local/share/sandbox/font-specimen.py /usr/local/share/sandbox/tools-check.sh
 # /home 是全部命名空间账号的家目录与执行记录（/home/.sandbox）所在，挂卷持久化。
 # SANDBOX_COMMAND_ENV：运行器给每条命令额外设的环境变量，见 README：
 #   NODE_PATH     Node 全局包的位置，脚本里直接 require

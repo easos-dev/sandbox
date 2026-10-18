@@ -1,5 +1,7 @@
-# Docker 构建上下文就是 sandbox/ 目录：只需要源码与清单，构建产物与文档不进镜像。
+# Docker 构建上下文就是本目录：构建产物、git 历史、本地构建与冒烟记录（.checks/，含截图与 PDF）不送，免得每次构建都传一遍。
+# doc/ 整个送进去（工具文档要装进镜像，接口文档很小）：不能写“只放行某个中文文件名”的规则，
+# BuildKit 拒绝含非 ASCII 字符的忽略规则（2026-10-18 实测报 exclude-patterns contains non-printable ASCII）。
 target/
-doc/
+.git/
+.checks/
 README.md
-*.md

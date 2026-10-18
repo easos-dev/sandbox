@@ -1,7 +1,8 @@
 # EasOS 沙箱运行器
 
 EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件、出产物。它替代原来的外部服务 Open Terminal，
-是一个独立工程：一个 Rust 守护进程（沙箱运行器）加一个 Docker 镜像（Debian + Python 数据栈 + LibreOffice + 中日文字体）。
+是一个独立工程：一个 Rust 守护进程（沙箱运行器）加一个 Docker 镜像（Debian 上的 PDF、OCR、Office、图片音视频、数据分析、LaTeX、
+Python 与 Node 常用库，以及中日英字体库）。镜像里有什么、怎么用，见 [doc/镜像工具.md](doc/镜像工具.md)，它也装进镜像供沙箱里的 AI 读取。
 
 设计原则只有一条：**文件字节只在浏览器、对象存储与沙箱三者之间流动，助手后端与运行器之间只传 JSON。**
 所以运行器没有读文件、写文件、列目录、取字节的接口；文件靠"按地址下载进工作区"与"按上传计划 PUT 出去"两个原语进出。
@@ -15,8 +16,8 @@ EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件�
   新账号分配 ID 时避开所有现存家目录的属主，不会抢走别人的 UID。
 - **会话目录** `~/conversations/<会话 ID>/`，接口里的路径一律相对它，规范化后拒绝 `..`、绝对路径与反斜杠；
   运行器自己打开文件时每一级都不跟随符号链接，命令摆不出能让运行器读到会话目录之外的路径。
-- **命令**：`bash -c`，工作目录是会话目录，环境只有 HOME、USER、LOGNAME、SHELL、PATH、LANG、TERM、PYTHONUNBUFFERED、MPLBACKEND；
-  运行器的密钥与任何 EasOS 凭证都不在里面。单条最长 600 秒，超时按进程组先 TERM 两秒后 KILL。
+- **命令**：`bash -c`，工作目录是会话目录，环境只有 HOME、USER、LOGNAME、SHELL、PATH（账号的 `~/.local/bin` 在最前）、LANG、TERM、
+  PYTHONUNBUFFERED、MPLBACKEND，以及 `SANDBOX_COMMAND_ENV` 配的变量（镜像里是 NODE_PATH、MATPLOTLIBRC）；运行器的密钥与任何 EasOS 凭证都不在里面。单条最长 600 秒，超时按进程组先 TERM 两秒后 KILL。
   标准输出与错误合并成一条流，完整写进会话目录 `out/<执行号>.txt`，状态接口只给最后 16 KiB 并标明是否截断。
   执行记录另存一份小 JSON；运行器重启后凭执行号仍能查到"已结束（退出码）"或"未知（重启时还在跑）"，不恢复进行中的命令。
 - **文件接口**（全部 JSON）：下载到工作区、算指纹（大小、MIME、MD5、内容 ETag、CRC64-ECMA/NVME、分片 MD5）、
@@ -41,9 +42,10 @@ EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件�
 | `tests/local.rs` | 不依赖 Docker 的集成测试（单用户模式起真进程） |
 | `Dockerfile`、`entrypoint.sh` | 镜像与入口（网络规则） |
 | `image/` | 装进镜像的配置：字体名映射 `fonts.conf`、`matplotlibrc`、`pip.conf`；构建时拆可变字体的 `static-fonts.py`；`tex/` 是 ctex 默认字库 |
-| `scripts/smoke.py`、`scripts/tools-check.sh` | 镜像冒烟；镜像工具逐项核对 |
-| `scripts/font-specimen.py` | 在容器里生成字体样张 PDF |
-| `doc/接口.md` | 接口文档 |
+| `scripts/smoke.py`、`scripts/tools-check.sh` | 镜像冒烟；镜像工具逐项核对（按工具文档的清单，也装进镜像） |
+| `scripts/font-specimen.py` | 生成字体样张 PDF（也装进镜像） |
+| `doc/接口.md` | 接口文档（给助手后端的开发者） |
+| `doc/镜像工具.md` | 镜像里的工具与用法（给沙箱里的 AI；装到镜像的 `/usr/local/share/sandbox/TOOLS.md`），文末清单由冒烟核对 |
 
 ## 配置项（环境变量）
 
@@ -71,51 +73,17 @@ Docker 默认只从 172.17～172.31 与 192.168 里分配网段，所以容器�
 ## 镜像里的工具
 
 基础是 Debian trixie，Python 3.13、Node 20，镜像约 5.8 GB（系统包 2 GB、Python 包 1.5 GB、LaTeX 1.1 GB、设计用字体 0.75 GB、Node 包 0.2 GB）。
-下面的工具都已预装，命令里直接用；`scripts/tools-check.sh` 逐项真用一遍核对。
+**工具清单、用法与已知的坑只在 [doc/镜像工具.md](doc/镜像工具.md) 维护**：它装进镜像的 `/usr/local/share/sandbox/TOOLS.md`，助手的系统提示里应告诉模型去读它。
+文末的清单（命令、系统包、Python 包与模块、Node 包、字族）由冒烟逐项核对镜像，并与 Dockerfile 的安装列表比对，改镜像时两边同步改。
 
-| 类别 | 命令行 | Python | Node |
-| --- | --- | --- | --- |
-| PDF | poppler（pdftotext、pdftoppm、pdfimages、pdffonts、pdfinfo）、qpdf、ghostscript、mutool | pypdf、pdfplumber、PyMuPDF（fitz）、pikepdf、pdf2image、reportlab、fpdf2、weasyprint（HTML 转 PDF）、img2pdf | pdf-lib |
-| OCR | tesseract（官方高精度模型：简体、繁体、日文横排与竖排、英文）、ocrmypdf（给扫描 PDF 加文字层） | ocrmypdf | |
-| LaTeX | XeLaTeX、LuaLaTeX、latexmk；中文 ctex（xeCJK），日文 luatexja；常用宏包、推荐字体、理科宏包（公式、单位、算法） | | |
-| Office | LibreOffice Writer/Calc/Impress/Draw（`soffice --headless --convert-to`）、pandoc | openpyxl、xlsxwriter、xlrd、pyxlsb、odfpy、python-docx、docxtpl、python-pptx、mammoth、msoffcrypto-tool、xlsx2csv、uno（驱动 LibreOffice） | pptxgenjs、docx、exceljs |
-| 图片与音视频 | ImageMagick（magick）、vips、ffmpeg、exiftool、cwebp、optipng、pngquant、jpegoptim、rsvg-convert、graphviz（dot） | Pillow、pillow-heif、OpenCV（headless）、scikit-image、imageio、cairosvg、qrcode、pyzbar、graphviz | sharp |
-| 数据分析 | sqlite3、csvkit（in2csv、csvsql、csvstat）、jq | pandas、numpy、scipy、scikit-learn、statsmodels、polars、pyarrow、duckdb、sympy、networkx、matplotlib、seaborn、plotly | csv-parse、csv-stringify |
-| 文本与网络 | ripgrep（rg）、fd（fdfind）、tree、file、curl、wget、git | requests、httpx、beautifulsoup4、lxml、html5lib、markdown、jinja2、pyyaml、tabulate、chardet、python-dateutil、tqdm、jieba、wordcloud | marked、typescript、tsx |
-| 压缩 | zip/unzip、7z、xz、bzip2、zstd、unar（含 rar） | | |
+镜像构建里几处不显然的做法（原因写在对应文件开头）：
 
-**字体**（共 371 个字族；`scripts/font-specimen.py` 在容器里生成按语言分组的样张 PDF，挑字体时看它）：
-
-| 用途 | 中文 | 日文 | 英文 |
-| --- | --- | --- | --- |
-| 正文与标题 | 思源黑体 / 思源宋体（Noto Sans/Serif CJK SC，Thin～Black 七档字重）、霞鹜文楷、朱雀仿宋（国标字形，公文）、文鼎 PL 楷体与明体、文泉驿 | 源ノ角ゴシック / 源ノ明朝、BIZ UD ゴシック / 明朝、IPAex、Zen 角ゴシック、Zen 丸ゴシック、Zen オールド明朝、しっぽり明朝、M PLUS 1 / Rounded 1c、さわらび、モトヤ | 无衬线：Inter、Source Sans 3、IBM Plex Sans、Poppins、Montserrat、Raleway、Nunito、Work Sans、DM Sans、Manrope、Quicksand、Lato、Open Sans、Roboto；衬线：Playfair Display、Merriweather、Lora、Source Serif 4、Libre Baskerville、Crimson Pro、EB Garamond、Linux Libertine、Vollkorn、IBM Plex Serif、Roboto Slab、TeX Gyre 全套 |
-| 展示与书法 | 得意黑、站酷小薇、站酷庆科黄油体、站酷快乐体、马善政毛笔楷书、龙藏体 | Klee One（手书风）、Dela Gothic One | Oswald、Bebas Neue、League Spartan |
-| 度量兼容 Office 字体 | | | Liberation（Arial / Times New Roman / Courier New）、Carlito（Calibri）、Caladea（Cambria）、Gelasio（Georgia）、Comic Neue（Comic Sans） |
-| 等宽与其他 | Noto Sans Mono CJK | | JetBrains Mono、Fira Code、IBM Plex Mono、DejaVu Sans Mono；数学 STIX、Latin Modern；彩色 Emoji Noto Color Emoji |
-
-- **来源**：大部分是 Debian 官方包；Debian 没有的取自 Google Fonts 官方仓库（固定提交，git 按对象哈希校验）与朱雀仿宋的发布页（按 SHA-256 校验），都是 OFL 许可。
-  Google Fonts 的可变字体由 `image/static-fonts.py` 拆成各字重的静态字体：reportlab、fpdf2、matplotlib 只认静态字体的字重。
-- **朱雀仿宋改了族名**：原名带“(technical preview)”，weasyprint 拿族名拼 PDF 里的字体名时不转义括号，生成的 PDF 语法不合法。
-  构建时改成 `Zhuque Fangsong`（OFL 1.1，没有声明保留字体名，允许改名）。
-- **字体名映射**（`image/fonts.conf`）：Windows / macOS 文档里的宋体、微软雅黑、楷体、仿宋、新細明體、標楷體、ＭＳ 明朝、メイリオ、游ゴシック、맑은 고딕、
-  Georgia、Garamond、Palatino、Century Gothic 等字体名，映射到上面字形与用途最接近的字体，LibreOffice 转出的 PDF 不会乱换字体；
-  公文常用的方正小标宋映射到思源宋体粗体，方正仿宋到朱雀仿宋。没指定语言的汉字默认用简体字形。
-- **matplotlib 默认就能画中文**：`image/matplotlibrc` 装到 `/etc/matplotlibrc`，运行器经 `SANDBOX_COMMAND_ENV` 设 `MATPLOTLIBRC` 指向它。
-  matplotlib 只在 `font.family` 列出的字体之间回退，所以那里写的是 `sans-serif, Noto Sans CJK SC`；画衬线中文时改成 `serif, Noto Serif CJK SC`。
-- **OCR 用官方高精度模型**（tessdata_best 4.1.0，构建时按 SHA-256 校验下载）：Debian 自带的是精简版，日文“稼働率”会认错。
-  tesseract 默认的版面分析面向整页，只有一行字的小图要加 `--psm 7`。
-- **HTML 转 PDF 要声明编码**：weasyprint 读本地 HTML 文件时，没有 `<meta charset="utf-8">` 就按 windows-1252 解码，中文成乱码。
-- **Node 全局包直接 `require`**：运行器经 `SANDBOX_COMMAND_ENV` 给命令设了 `NODE_PATH`。
-- **模型可以自己装包**：`pip install x` 会自动装到账号的 `~/.local`（`/etc/pip.conf` 放开了 PEP 668 的限制），`~/.local/bin` 在 PATH 最前面；
-  `npm install x` 装在当前目录。两者都要访问公网。
-
-- **LaTeX**：ctex 的默认字库改成镜像里的思源宋体、思源黑体、文鼎楷体、朱雀仿宋（`image/tex/`，`\songti` `\heiti` `\kaishu` `\fangsong` 都可用），
-  文档自己写 `fontset=...` 时以文档为准；只支持 XeLaTeX 与 LuaLaTeX。XeLaTeX 生成的 PDF 里思源字体显示为 NotoSerifCJKjp，
-  这是 xdvipdfmx 的命名方式，字形是简体（逐像素核对过）。日文用 `ltjsarticle` 配 LuaLaTeX，默认原ノ味字体。LuaLaTeX 的字体缓存构建时已预热，
-  每个账号第一次编译中文约 10 秒，之后很快。Markdown 转 PDF：`pandoc x.md -o x.pdf --pdf-engine=xelatex -V CJKmainfont="Noto Serif CJK SC"`。
-
-没装的：Java（tabula、pdftk 不可用，用 pdfplumber、qpdf 代替）、浏览器内核（plotly 只能出 HTML，静态图用 matplotlib）、
-完整版 TeX Live（约 8.4 GB；现装的是 XeLaTeX / LuaLaTeX 加中日文与常用宏包，约 1.1 GB）。
+- `image/fonts.conf`：Windows / macOS 文档里的中日英字体名映射到镜像里风格对应的字体。
+- `image/static-fonts.py`：Google Fonts 的可变字体拆成各字重的静态字体（reportlab、fpdf2、matplotlib 只认静态字体的字重）。
+- 朱雀仿宋构建时改族名，去掉“(technical preview)”：weasyprint 拿族名拼 PDF 字体名时不转义括号，PDF 语法不合法；许可证是 OFL 1.1 且没有保留字体名。
+- `image/matplotlibrc`：matplotlib 默认能画中文，运行器经 `SANDBOX_COMMAND_ENV` 的 `MATPLOTLIBRC` 指向它。
+- `image/tex/`：ctex 默认字库改成思源宋体/黑体、文鼎楷体、朱雀仿宋；最后一层预热 LuaLaTeX 字体缓存。
+- OCR 模型用 tessdata_best，Google Fonts 固定提交、朱雀仿宋与 OCR 模型按 SHA-256 校验下载。
 
 ## 部署（Docker）
 
@@ -150,13 +118,14 @@ curl -H 'Authorization: Bearer dev' -H 'X-User-Id: user-dev' -d '{"conversation_
 
 单用户模式下账号目录就是 `<家目录根>/<X-User-Id>`，命令以当前用户执行；路径与符号链接的检查照常生效。
 
-镜像建好后用 `python3 scripts/smoke.py [镜像名]` 冒烟：起容器，核对 Python 数据栈、账号隔离、指纹、公网可达与默认拒绝清单、
-密钥文件不可读、NET_ADMIN 已收回、LibreOffice 转 PDF、超时、容器重建后账号沿用原 UID、删会话，另起容器核对拒绝清单设空与写错、
-密钥文件挂错位置；打印镜像大小与各步耗时，最后删掉容器、临时卷与临时密钥文件。
+镜像建好后用 `python3 scripts/smoke.py [镜像名]` 冒烟：先核对工具文档的清单与 Dockerfile 一致；再起容器，核对账号隔离、指纹、
+公网可达与默认拒绝清单、密钥文件不可读、NET_ADMIN 已收回、超时、容器重建后账号沿用原 UID、删会话；以命名空间账号跑 `scripts/tools-check.sh`
+（按文档清单逐项核对，并真用一遍 PDF、OCR、Office、图片、LaTeX、字体等）；另起容器核对拒绝清单设空与写错、密钥文件挂错位置。
+最后删掉容器、临时卷与临时密钥文件。构建时如果卡在拉基础镜像，多半是 Docker 客户端的凭据助手挂住，用不含 credsStore 的临时 `DOCKER_CONFIG` 匿名拉。
 
 ## 边界与未做
 
 - 用户隔离之外的加固（seccomp、资源配额、进程数上限）未做；命令用 `setsid` 脱离进程组的后代不会被超时或停止波及。
 - 输出文件 `out/<执行号>.txt` 与工作区不自动清理；执行记录随 `DELETE /conversations/{id}` 一起删除，不另设定时清理。
 - 没有文件面板接口、没有 WebSocket；运行器不对接 File，只认助手交来的地址与上传计划。
-- 镜像不含 Java、浏览器内核与完整版 TeX Live，见“镜像里的工具”最后一段。
+- 镜像不含 Java、浏览器内核与完整版 TeX Live，替代办法见 [doc/镜像工具.md](doc/镜像工具.md)“没有的东西”。

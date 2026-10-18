@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""镜像冒烟：起容器，走一遍
+"""镜像冒烟：先在宿主机核对工具文档 doc/镜像工具.md 的清单与 Dockerfile 一致，再起容器，走一遍
 健康检查、python3 数据栈、以命名空间账号执行与干净环境、写文件后 stat、跨命名空间隔离、
 命令账号的公网可达 / 默认拒绝清单（私网、33 段）/ 运行器端口拒绝 / 读不到密钥文件、运行器已收回 NET_ADMIN、
-LibreOffice 转 PDF、超时终止、镜像工具逐项核对（scripts/tools-check.sh，以命名空间账号执行）、
+LibreOffice 转 PDF、超时终止、镜像工具逐项核对（scripts/tools-check.sh，以命名空间账号执行，按工具文档的清单）、
 容器重建后账号沿用旧家目录的 UID 且新账号不抢号、删会话，
 以及另起容器检查：拒绝清单设为空、拒绝清单写错、密钥文件挂错位置。
 打印镜像大小与每步耗时，最后删掉容器、临时卷与临时密钥文件。
@@ -15,6 +15,7 @@ LibreOffice 转 PDF、超时终止、镜像工具逐项核对（scripts/tools-ch
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -120,6 +121,34 @@ def refused_quickly(target: str) -> tuple[bool, str]:
     return "exit=7" in out and elapsed < 2, f"{out.strip().replace(chr(10), ' | ')}  {elapsed:.1f}s"
 
 
+def doc_matches_dockerfile() -> None:
+    """宿主机侧核对：工具文档清单里的系统包、Python 包、Node 包，与 Dockerfile 的安装列表完全一致。
+    镜像里装了而文档没写（AI 不知道有），或文档写了而 Dockerfile 没装，都算失败；镜像里是否真的装上由 tools-check.sh 核对。"""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    dockerfile = open(os.path.join(root, "Dockerfile"), encoding="utf-8").read()
+    doc = open(os.path.join(root, "doc", "镜像工具.md"), encoding="utf-8").read()
+
+    def block(name: str) -> set[str]:
+        match = re.search(r"^```" + re.escape(name) + r"\n(.*?)^```", doc, re.S | re.M)
+        return {line.strip() for line in match.group(1).splitlines() if line.strip()} if match else set()
+
+    def words(text: str) -> set[str]:
+        return set(re.findall(r"[A-Za-z0-9][A-Za-z0-9.+_-]*", text.replace("\\", " ")))
+
+    apt = set()
+    for chunk in re.findall(r"apt-get install -y --no-install-recommends \\\n(.*?)\n \&\& rm -rf", dockerfile, re.S):
+        apt |= words(chunk)
+    pip = words(re.search(r"pip install --no-cache-dir --break-system-packages \\\n(.*?)\n\n", dockerfile, re.S).group(1))
+    npm = words(re.search(r"npm install -g --omit=dev \\\n(.*?)\n \&\& npm", dockerfile, re.S).group(1))
+    for label, installed, listed in (("系统包", apt, block("apt-packages")), ("Python 包", pip, block("pip-packages")), ("Node 包", npm, block("node-packages"))):
+        detail = f"{len(installed)} 个"
+        if installed - listed:
+            detail += f"；Dockerfile 装了而文档没写: {sorted(installed - listed)}"
+        if listed - installed:
+            detail += f"；文档写了而 Dockerfile 没装: {sorted(listed - installed)}"
+        check(f"文档与 Dockerfile 一致：{label}", bool(installed) and installed == listed, detail)
+
+
 def side_checks() -> None:
     """另起容器检查拒绝清单的两种配置与密钥文件挂错位置；它们不对外映射端口，也不挂卷。"""
     name = NAME + "-side"
@@ -145,6 +174,7 @@ def side_checks() -> None:
 
 
 def main():
+    doc_matches_dockerfile()
     os.makedirs(os.path.dirname(KEY_FILE), exist_ok=True)
     fd = os.open(KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as handle:
