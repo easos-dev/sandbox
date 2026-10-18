@@ -1,0 +1,18 @@
+[Unit]
+Description=EasOS 助手沙箱运行器
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# 环境变量与 Docker 镜像的 ENV 一致；密钥文件由部署者写到 /root/.sandbox-key（权限 600）。
+EnvironmentFile=/etc/easos-sandbox/env
+# 入口脚本：核对密钥文件、用 NET_ADMIN 写好命令账号的 iptables 规则后自己收回该能力，再以 root 运行运行器。
+ExecStart=/usr/local/bin/sandbox-entrypoint
+Restart=on-failure
+RestartSec=5
+# 停止时先只给运行器发信号，让它收尾；超时再杀整个控制组（命令账号的进程都在里面）。
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

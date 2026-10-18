@@ -5,3 +5,4 @@
 .DS_Store
 # Python 字节码缓存（py_compile、直接运行脚本时生成）。
 __pycache__/
+dist/

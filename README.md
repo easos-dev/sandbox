@@ -108,6 +108,32 @@ docker run -d --name easos-sandbox --restart unless-stopped \
 - 要调整命令账号的拒绝清单时加 `-e SANDBOX_DENY_NETWORKS=<网段,…>`；放开全部网段用 `-e SANDBOX_DENY_NETWORKS=`。
 - 升级镜像就是删掉容器再按上面的命令重起，卷保留：账号会在各自下一次请求时按卷里的家目录重建，UID 不变。
 
+## 部署（LXC / Proxmox，容器里不装 Docker）
+
+`scripts/build-lxc-template.sh` 把沙箱镜像加上 systemd（`lxc/Dockerfile`）后导出成 LXC 容器模板（根文件系统 `tar.zst`，约 3 GB），Proxmox 直接用它建容器，容器里不需要 Docker。在装有 Docker 的机器上打模板（amd64）：
+
+```sh
+scripts/build-lxc-template.sh easit2/easos-sandbox:3060446 dist/easos-sandbox_3060446_amd64.tar.zst
+```
+
+Proxmox 上建容器（编号、存储、网络按实际改）：
+
+```sh
+cp easos-sandbox_3060446_amd64.tar.zst /var/lib/vz/template/cache/
+pct create 121 local:vztmpl/easos-sandbox_3060446_amd64.tar.zst --ostype debian --hostname easos-sandbox \
+  --unprivileged 1 --cores 2 --memory 4096 --rootfs local-lvm:32 --net0 name=eth0,bridge=vmbr0,ip=dhcp
+pct start 121
+# 密钥只放在容器里 root 才能进的 /root 下，不进命令行、不进日志。
+pct exec 121 -- sh -c 'umask 077 && python3 -c "import secrets;print(secrets.token_urlsafe(32),end=\"\")" > /root/.sandbox-key'
+pct exec 121 -- systemctl restart easos-sandbox
+pct exec 121 -- cat /root/.sandbox-key    # 填进助手配置的“沙箱密钥”，地址填 http://<容器地址>:8000
+```
+
+- 服务 `easos-sandbox.service` 以 root 运行入口脚本（与 Docker 相同：核对密钥文件、写好命令账号的 iptables 规则后收回 NET_ADMIN）；环境变量在 `/etc/easos-sandbox/env`（与镜像 ENV 一致，可加 `SANDBOX_DENY_NETWORKS`）。账号家目录与执行记录在容器自己的 `/home`，升级换模板前要保留它。
+- 非特权容器里 iptables 能不能写取决于宿主内核是否加载了 nf_tables 模块；写不了时入口脚本只打警告照常启动，命令账号的网络不受限，部署后看一眼 `journalctl -u easos-sandbox` 有没有这条警告。
+- 模板里没有 sshd，用 `pct enter` / `pct exec` 进容器；网络由 Proxmox 写 `/etc/network/interfaces`（模板装了 ifupdown 与 DHCP 客户端）。
+- 模板只在 Docker 里以 systemd 为 PID 1 启动核对过服务能起、能应答，没有在真实 Proxmox 上验证；首次部署后核对 `systemctl status easos-sandbox` 与一次 `/execute`。
+
 ## 本机运行与测试
 
 ```sh

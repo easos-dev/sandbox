@@ -1,0 +1,8 @@
+# 沙箱运行器的环境变量（systemd EnvironmentFile，与 Docker 镜像的 ENV 一致）。
+# 密钥文件由部署者写到 /root/.sandbox-key（权限 600，只有 root 能进 /root）；不要把密钥写进本文件或命令行。
+SANDBOX_LISTEN=0.0.0.0:8000
+SANDBOX_HOME_ROOT=/home
+SANDBOX_COMMAND_ENV=NODE_PATH=/usr/local/lib/node_modules;MATPLOTLIBRC=/etc/matplotlibrc
+SANDBOX_API_KEY_FILE=/root/.sandbox-key
+# 命令账号的拒绝网段：不设用入口脚本的默认清单；设成空串表示不拒绝任何网段。
+# SANDBOX_DENY_NETWORKS=10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
