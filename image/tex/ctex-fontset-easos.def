@@ -1,0 +1,29 @@
+%% 沙箱镜像的 ctex 字库（fontset=easos），装到 TEXMFLOCAL，由同目录的 ctexopts.cfg 设为默认。
+%% 为什么不用 ctex 自带的：Linux 上 ctex 默认用 fandol（收字少，生僻字缺字）；自带的 ubuntu 字库用思源字体，
+%% 但楷体指向镜像里没有的 AR PL KaitiM GB，也没有仿宋。这里全部换成镜像里实有的字体：
+%%   宋体 思源宋体（Noto Serif CJK SC）  黑体 思源黑体（Noto Sans CJK SC）  楷体 文鼎 PL 中楷（AR PL UKai CN）
+%%   仿宋 朱雀仿宋（Zhuque Fangsong）    斜体 用楷体（中文排版惯例）       等宽 思源等宽（Noto Sans Mono CJK SC）
+%% 只支持 XeLaTeX 与 LuaLaTeX；pdfLaTeX、upLaTeX 用这套字库时报错，可显式改用 fontset=fandol。
+%% 结构照 ctex 自带的 ctex-fontset-ubuntu.def：\ctex_fontset_case:nnnn 的四个分支依次是
+%%   pdfLaTeX、LaTeX+dvipdfmx、upLaTeX、XeLaTeX/LuaLaTeX。
+%% 两种引擎都按字体名经 fontconfig 找字体。注意：XeLaTeX 生成的 PDF 里，思源字体一律显示成字体集合第一面的名字（NotoSerifCJKjp），
+%% 这是 xdvipdfmx 的命名方式，字形其实是简体中文那一面（2026-10-18 逐像素比对：与简体字面差 0、与日文字面差上万像素）。
+%% 不要因为看到 jp 就改成按文件名与字面序号指定。
+\ProvidesExplFile{ctex-fontset-easos.def}{2026/10/18}{1.0}{EasOS sandbox fonts definition}
+\ctex_fontset_case:nnnn
+  { \ctex_fontset_error:n { easos } }
+  { \ctex_fontset_error:n { easos } }
+  { \ctex_fontset_error:n { easos } }
+  {
+    \setCJKmainfont { Noto~Serif~CJK~SC } [ ItalicFont = AR~PL~UKai~CN ]
+    \setCJKsansfont { Noto~Sans~CJK~SC }
+    \setCJKmonofont { Noto~Sans~Mono~CJK~SC }
+    \setCJKfamilyfont { zhsong } { Noto~Serif~CJK~SC }
+    \setCJKfamilyfont { zhhei  } { Noto~Sans~CJK~SC  }
+    \setCJKfamilyfont { zhkai  } { AR~PL~UKai~CN     }
+    \setCJKfamilyfont { zhfs   } { Zhuque~Fangsong   }
+  }
+\NewDocumentCommand \songti   { } { \CJKfamily { zhsong } }
+\NewDocumentCommand \heiti    { } { \CJKfamily { zhhei  } }
+\NewDocumentCommand \kaishu   { } { \CJKfamily { zhkai  } }
+\NewDocumentCommand \fangsong { } { \CJKfamily { zhfs   } }

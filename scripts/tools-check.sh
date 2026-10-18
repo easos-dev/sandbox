@@ -23,7 +23,7 @@ check() {
 missing=""
 for c in python python3 pip node npm npx tsx pdftotext pdftoppm pdfinfo pdffonts pdfimages qpdf gs mutool tesseract ocrmypdf \
          soffice pandoc magick vips ffmpeg ffprobe exiftool cwebp optipng pngquant jpegoptim rsvg-convert dot \
-         sqlite3 rg fdfind tree file jq bc 7z unar zstd xz git curl wget in2csv csvsql img2pdf; do
+         sqlite3 rg fdfind tree file jq bc 7z unar zstd xz git curl wget in2csv csvsql img2pdf xelatex lualatex latexmk; do
     command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
 done
 [ -z "$missing" ] && pass "命令行工具齐全" || fail "命令行工具齐全" "缺:$missing"
@@ -297,6 +297,41 @@ EOF
 check "Node 生成 PPT" bash -c '
 node -e "const P=require(\"pptxgenjs\"); const p=new P(); p.addSlide().addText(\"季度报告\", {x:1,y:1}); p.writeFile({fileName:\"deck.pptx\"}).then(()=>{})" &&
 python3 -c "import pptx; print(len(pptx.Presentation(\"deck.pptx\").slides), \"页，python-pptx 可读\")"'
+
+# 15. LaTeX：XeLaTeX + ctex 写中文（默认字库应是思源宋体/黑体、文鼎楷体、朱雀仿宋，见 image/tex/）、公式；
+#     XeLaTeX 的 PDF 里思源字体显示为 NotoSerifCJKjp 是 xdvipdfmx 的命名方式，字形是简体，只比对前缀 NotoSerifCJK。
+#     LuaLaTeX + luatexja 写日文；pandoc 经 XeLaTeX 把 Markdown 转 PDF。
+check "XeLaTeX 中文与公式" bash -c '
+cat > zh.tex <<TEX
+\documentclass{ctexart}
+\usepackage{amsmath}
+\begin{document}
+\section{入住统计}
+本月入住率为 85\%，较上月提升。{\heiti 黑体强调}，{\kaishu 楷体备注}，{\fangsong 仿宋落款}。
+\[ \sum_{i=1}^{n} i = \frac{n(n+1)}{2} \]
+\end{document}
+TEX
+xelatex -interaction=nonstopmode -halt-on-error zh.tex >/dev/null 2>&1 || { grep -m3 "^!" zh.log; exit 1; }
+pdftotext zh.pdf - | tr -d " \n" | grep -q "入住统计" || { echo "抽不出中文"; exit 1; }
+fonts=$(pdffonts zh.pdf | awk "NR>2 {print \$1}" | sed "s/^[A-Z]*+//" | sort -u | tr "\n" " ")
+for want in NotoSerifCJK NotoSansCJK UKai ZhuqueFangsong; do case "$fonts" in *"$want"*) ;; *) echo "缺 $want，实际: $fonts"; exit 1;; esac; done
+echo "$fonts"'
+check "LuaLaTeX 日文" bash -c '
+cat > ja.tex <<TEX
+\documentclass{ltjsarticle}
+\begin{document}
+\section{宿泊者名簿}
+チェックインは15時からです。
+\end{document}
+TEX
+lualatex -interaction=nonstopmode -halt-on-error ja.tex >/dev/null 2>&1 || { grep -m3 "^!" ja.log; exit 1; }
+pdftotext ja.pdf - | tr -d " \n" | grep -q "宿泊者名簿" || { echo "抽不出日文"; exit 1; }
+pdffonts ja.pdf | awk "NR>2 {print \$1}" | sed "s/^[A-Z]*+//" | sort -u | tr "\n" " "'
+check "pandoc 经 XeLaTeX 出 PDF" bash -c '
+printf "# 月度报告\n\n入住率 **85%%**，公式 \$a^2+b^2=c^2\$。\n" > report.md
+pandoc report.md -o report.pdf --pdf-engine=xelatex -V CJKmainfont="Noto Serif CJK SC" 2>&1 | tail -2
+pdftotext report.pdf - | tr -d " \n" | grep -q "月度报告" || { echo "抽不出中文"; exit 1; }
+echo "$(pdfinfo report.pdf | awk "/^Pages:/ {print \$2}") 页"'
 
 # 14. 模型自己 pip install：系统目录不可写时装到 ~/.local，命令在 PATH 里
 check "pip 装到用户目录" bash -c '

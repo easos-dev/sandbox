@@ -40,7 +40,7 @@ EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件�
 | `src/checksum.rs`、`src/mime.rs` | 指纹与 MIME 推断的纯计算 |
 | `tests/local.rs` | 不依赖 Docker 的集成测试（单用户模式起真进程） |
 | `Dockerfile`、`entrypoint.sh` | 镜像与入口（网络规则） |
-| `image/` | 装进镜像的配置：字体名映射 `fonts.conf`、`matplotlibrc`、`pip.conf`；构建时拆可变字体的 `static-fonts.py` |
+| `image/` | 装进镜像的配置：字体名映射 `fonts.conf`、`matplotlibrc`、`pip.conf`；构建时拆可变字体的 `static-fonts.py`；`tex/` 是 ctex 默认字库 |
 | `scripts/smoke.py`、`scripts/tools-check.sh` | 镜像冒烟；镜像工具逐项核对 |
 | `scripts/font-specimen.py` | 在容器里生成字体样张 PDF |
 | `doc/接口.md` | 接口文档 |
@@ -70,13 +70,14 @@ Docker 默认只从 172.17～172.31 与 192.168 里分配网段，所以容器�
 
 ## 镜像里的工具
 
-基础是 Debian trixie，Python 3.13、Node 20，镜像约 4.75 GB（系统包 2 GB、Python 包 1.5 GB、设计用字体 0.75 GB、Node 包 0.2 GB）。
+基础是 Debian trixie，Python 3.13、Node 20，镜像约 5.8 GB（系统包 2 GB、Python 包 1.5 GB、LaTeX 1.1 GB、设计用字体 0.75 GB、Node 包 0.2 GB）。
 下面的工具都已预装，命令里直接用；`scripts/tools-check.sh` 逐项真用一遍核对。
 
 | 类别 | 命令行 | Python | Node |
 | --- | --- | --- | --- |
 | PDF | poppler（pdftotext、pdftoppm、pdfimages、pdffonts、pdfinfo）、qpdf、ghostscript、mutool | pypdf、pdfplumber、PyMuPDF（fitz）、pikepdf、pdf2image、reportlab、fpdf2、weasyprint（HTML 转 PDF）、img2pdf | pdf-lib |
 | OCR | tesseract（官方高精度模型：简体、繁体、日文横排与竖排、英文）、ocrmypdf（给扫描 PDF 加文字层） | ocrmypdf | |
+| LaTeX | XeLaTeX、LuaLaTeX、latexmk；中文 ctex（xeCJK），日文 luatexja；常用宏包、推荐字体、理科宏包（公式、单位、算法） | | |
 | Office | LibreOffice Writer/Calc/Impress/Draw（`soffice --headless --convert-to`）、pandoc | openpyxl、xlsxwriter、xlrd、pyxlsb、odfpy、python-docx、docxtpl、python-pptx、mammoth、msoffcrypto-tool、xlsx2csv、uno（驱动 LibreOffice） | pptxgenjs、docx、exceljs |
 | 图片与音视频 | ImageMagick（magick）、vips、ffmpeg、exiftool、cwebp、optipng、pngquant、jpegoptim、rsvg-convert、graphviz（dot） | Pillow、pillow-heif、OpenCV（headless）、scikit-image、imageio、cairosvg、qrcode、pyzbar、graphviz | sharp |
 | 数据分析 | sqlite3、csvkit（in2csv、csvsql、csvstat）、jq | pandas、numpy、scipy、scikit-learn、statsmodels、polars、pyarrow、duckdb、sympy、networkx、matplotlib、seaborn、plotly | csv-parse、csv-stringify |
@@ -108,8 +109,13 @@ Docker 默认只从 172.17～172.31 与 192.168 里分配网段，所以容器�
 - **模型可以自己装包**：`pip install x` 会自动装到账号的 `~/.local`（`/etc/pip.conf` 放开了 PEP 668 的限制），`~/.local/bin` 在 PATH 最前面；
   `npm install x` 装在当前目录。两者都要访问公网。
 
-没装的：LaTeX（XeLaTeX 加中日文支持装好后约 1.0 GB，完整版 8.4 GB；Markdown 转 PDF 用 `pandoc --pdf-engine=weasyprint`）、
-Java（tabula、pdftk 不可用，用 pdfplumber、qpdf 代替）、浏览器内核（plotly 只能出 HTML，静态图用 matplotlib）。
+- **LaTeX**：ctex 的默认字库改成镜像里的思源宋体、思源黑体、文鼎楷体、朱雀仿宋（`image/tex/`，`\songti` `\heiti` `\kaishu` `\fangsong` 都可用），
+  文档自己写 `fontset=...` 时以文档为准；只支持 XeLaTeX 与 LuaLaTeX。XeLaTeX 生成的 PDF 里思源字体显示为 NotoSerifCJKjp，
+  这是 xdvipdfmx 的命名方式，字形是简体（逐像素核对过）。日文用 `ltjsarticle` 配 LuaLaTeX，默认原ノ味字体。LuaLaTeX 的字体缓存构建时已预热，
+  每个账号第一次编译中文约 10 秒，之后很快。Markdown 转 PDF：`pandoc x.md -o x.pdf --pdf-engine=xelatex -V CJKmainfont="Noto Serif CJK SC"`。
+
+没装的：Java（tabula、pdftk 不可用，用 pdfplumber、qpdf 代替）、浏览器内核（plotly 只能出 HTML，静态图用 matplotlib）、
+完整版 TeX Live（约 8.4 GB；现装的是 XeLaTeX / LuaLaTeX 加中日文与常用宏包，约 1.1 GB）。
 
 ## 部署（Docker）
 
@@ -153,4 +159,4 @@ curl -H 'Authorization: Bearer dev' -H 'X-User-Id: user-dev' -d '{"conversation_
 - 用户隔离之外的加固（seccomp、资源配额、进程数上限）未做；命令用 `setsid` 脱离进程组的后代不会被超时或停止波及。
 - 输出文件 `out/<执行号>.txt` 与工作区不自动清理；执行记录随 `DELETE /conversations/{id}` 一起删除，不另设定时清理。
 - 没有文件面板接口、没有 WebSocket；运行器不对接 File，只认助手交来的地址与上传计划。
-- 镜像不含 LaTeX、Java 与浏览器内核，见“镜像里的工具”最后一段。
+- 镜像不含 Java、浏览器内核与完整版 TeX Live，见“镜像里的工具”最后一段。

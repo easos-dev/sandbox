@@ -32,7 +32,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 #                   日文：IPAex / IPA 明朝与ゴシック；西文：Noto、DejaVu、Liberation（Arial/Times/Courier 度量兼容）、
 #                   Carlito/Caladea（Calibri/Cambria 度量兼容）、URW base35（PostScript 标准字体）、Roboto、Open Sans、Lato、
 #                   FreeFont；数学：STIX、Latin Modern；彩色 Emoji：Noto Color Emoji
-# 不装 LaTeX（约 1.5 GB）、Java 与浏览器内核；HTML 转 PDF 用 weasyprint，Markdown 转 PDF 用 pandoc 配 weasyprint。
+# 不装 Java 与浏览器内核；HTML 转 PDF 用 weasyprint。LaTeX 在后面单独一层。
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       bash curl wget ca-certificates procps jq git tzdata tini iptables libcap2-bin \
@@ -93,6 +93,15 @@ RUN pip install --no-cache-dir --break-system-packages \
       python-dateutil tqdm jieba wordcloud \
       csvkit
 
+# LaTeX（用户 2026-10-18 要求加）：XeLaTeX 与 LuaLaTeX，中文用 ctex（xeCJK），日文用 luatexja（LuaLaTeX），
+# 加常用宏包（latex-extra：表格、版式、TikZ 等）、推荐字体、理科宏包（公式、单位、算法）与 latexmk。装好约 1.1 GB。
+# 放在设计字体之前：改字体清单不会让这层重建。系统字体经 fontconfig 直接可用（fontspec / xeCJK 写字族名）。
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      texlive-xetex texlive-luatex texlive-lang-chinese texlive-lang-japanese \
+      texlive-latex-extra texlive-fonts-recommended texlive-science latexmk \
+ && rm -rf /var/lib/apt/lists/*
+
 # 设计用字体（为了排出好看的 PDF），放在 Python 包之后：改字体清单不会让前面的大层重建。
 # Debian 包：
 #   中文  思源黑体/宋体的全部字重（Thin～Black，标题与正文分出层次）、霞鹜文楷（LXGW WenKai）、得意黑（Smiley Sans）
@@ -146,7 +155,20 @@ RUN cd /tmp \
 COPY image/fonts.conf /etc/fonts/local.conf
 COPY image/pip.conf /etc/pip.conf
 COPY image/matplotlibrc /etc/matplotlibrc
-RUN fc-cache -f >/dev/null
+# ctex 默认字库改成镜像里的思源宋体/黑体、文鼎楷体、朱雀仿宋（原因见 image/tex/ctex-fontset-easos.def），装到 TEXMFLOCAL 后刷新 ls-R。
+COPY image/tex/ctex-fontset-easos.def image/tex/ctexopts.cfg /usr/local/share/texmf/tex/latex/ctex-easos/
+# 最后刷新字体缓存；再以 root 预建 LuaLaTeX 的字体索引，并各编译一遍中日文文档，把思源字体等的处理结果写进
+# 系统缓存（/var/lib/texmf，TEXMFCACHE 的第一项，命名空间账号只读也能用）。不预热时每个账号第一次 lualatex 要等约 1 分钟，
+# 预热后约 10 秒（2026-10-18 实测）。缓存约 120 MB。
+RUN fc-cache -f >/dev/null \
+ && mktexlsr /usr/local/share/texmf >/dev/null 2>&1 \
+ && luaotfload-tool -u >/dev/null \
+ && cd /tmp \
+ && printf '%s\n' '\documentclass{ctexart}' '\begin{document}' '宋体{\heiti 黑体}{\kaishu 楷体}{\fangsong 仿宋}\texttt{等宽}\textbf{粗体}\textit{斜体}' '\end{document}' > zh.tex \
+ && printf '%s\n' '\documentclass{ltjsarticle}' '\begin{document}' '日本語の文書\textbf{太字}' '\end{document}' > ja.tex \
+ && lualatex -interaction=batchmode zh.tex >/dev/null && lualatex -interaction=batchmode ja.tex >/dev/null \
+ && rm -f /tmp/zh.* /tmp/ja.* \
+ && test -d /var/lib/texmf/luatex-cache/generic/names
 COPY --from=build /src/target/release/sandbox-runner /usr/local/bin/sandbox-runner
 COPY entrypoint.sh /usr/local/bin/sandbox-entrypoint
 RUN chmod 755 /usr/local/bin/sandbox-entrypoint /usr/local/bin/sandbox-runner
