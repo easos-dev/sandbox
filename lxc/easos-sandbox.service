@@ -1,7 +1,8 @@
 [Unit]
 Description=EasOS 助手沙箱运行器
-After=network-online.target
-Wants=network-online.target
+# 只等网络栈就绪，不等 network-online.target：运行器监听 0.0.0.0，不依赖接口拿到地址；
+# Proxmox 容器里 network-online 要等 ifupdown 的联网等待，曾让启动任务一直排队（2026-10-19 实测）。
+After=network.target
 
 [Service]
 # 环境变量与 Docker 镜像的 ENV 一致；密钥文件由部署者写到 /root/.sandbox-key（权限 600）。
