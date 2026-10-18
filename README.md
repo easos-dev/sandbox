@@ -40,8 +40,9 @@ EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件�
 | `src/checksum.rs`、`src/mime.rs` | 指纹与 MIME 推断的纯计算 |
 | `tests/local.rs` | 不依赖 Docker 的集成测试（单用户模式起真进程） |
 | `Dockerfile`、`entrypoint.sh` | 镜像与入口（网络规则） |
-| `image/` | 装进镜像的配置：字体名映射 `fonts.conf`、`matplotlibrc`、`pip.conf` |
+| `image/` | 装进镜像的配置：字体名映射 `fonts.conf`、`matplotlibrc`、`pip.conf`；构建时拆可变字体的 `static-fonts.py` |
 | `scripts/smoke.py`、`scripts/tools-check.sh` | 镜像冒烟；镜像工具逐项核对 |
+| `scripts/font-specimen.py` | 在容器里生成字体样张 PDF |
 | `doc/接口.md` | 接口文档 |
 
 ## 配置项（环境变量）
@@ -69,7 +70,7 @@ Docker 默认只从 172.17～172.31 与 192.168 里分配网段，所以容器�
 
 ## 镜像里的工具
 
-基础是 Debian trixie，Python 3.13、Node 20，镜像约 4 GB（系统包与字体 2 GB、Python 包 1.5 GB、Node 包 0.2 GB）。
+基础是 Debian trixie，Python 3.13、Node 20，镜像约 4.75 GB（系统包 2 GB、Python 包 1.5 GB、设计用字体 0.75 GB、Node 包 0.2 GB）。
 下面的工具都已预装，命令里直接用；`scripts/tools-check.sh` 逐项真用一遍核对。
 
 | 类别 | 命令行 | Python | Node |
@@ -82,12 +83,22 @@ Docker 默认只从 172.17～172.31 与 192.168 里分配网段，所以容器�
 | 文本与网络 | ripgrep（rg）、fd（fdfind）、tree、file、curl、wget、git | requests、httpx、beautifulsoup4、lxml、html5lib、markdown、jinja2、pyyaml、tabulate、chardet、python-dateutil、tqdm、jieba、wordcloud | marked、typescript、tsx |
 | 压缩 | zip/unzip、7z、xz、bzip2、zstd、unar（含 rar） | | |
 
-**字体**：中文有 Noto CJK（思源黑体与宋体，简繁日韩各一套字形）、文鼎 PL 楷体与明体、文泉驿、cwTeX 仿宋与楷书；日文有 IPAex / IPA 明朝与ゴシック；
-西文有 Noto、DejaVu、Liberation（与 Arial、Times New Roman、Courier New 度量兼容）、Carlito / Caladea（与 Calibri、Cambria 度量兼容）、
-URW base35、Roboto、Open Sans、Lato、FreeFont；数学有 STIX、Latin Modern；彩色 Emoji 有 Noto Color Emoji。
+**字体**（共 371 个字族；`scripts/font-specimen.py` 在容器里生成按语言分组的样张 PDF，挑字体时看它）：
 
-- **字体名映射**（`image/fonts.conf`）：Windows / macOS 文档里的宋体、微软雅黑、楷体、仿宋、新細明體、標楷體、ＭＳ 明朝、メイリオ、游ゴシック、맑은 고딕等字体名，
-  映射到上面字形与用途最接近的字体，LibreOffice 转出的 PDF 不会乱换字体。没指定语言的汉字默认用简体字形。
+| 用途 | 中文 | 日文 | 英文 |
+| --- | --- | --- | --- |
+| 正文与标题 | 思源黑体 / 思源宋体（Noto Sans/Serif CJK SC，Thin～Black 七档字重）、霞鹜文楷、朱雀仿宋（国标字形，公文）、文鼎 PL 楷体与明体、文泉驿 | 源ノ角ゴシック / 源ノ明朝、BIZ UD ゴシック / 明朝、IPAex、Zen 角ゴシック、Zen 丸ゴシック、Zen オールド明朝、しっぽり明朝、M PLUS 1 / Rounded 1c、さわらび、モトヤ | 无衬线：Inter、Source Sans 3、IBM Plex Sans、Poppins、Montserrat、Raleway、Nunito、Work Sans、DM Sans、Manrope、Quicksand、Lato、Open Sans、Roboto；衬线：Playfair Display、Merriweather、Lora、Source Serif 4、Libre Baskerville、Crimson Pro、EB Garamond、Linux Libertine、Vollkorn、IBM Plex Serif、Roboto Slab、TeX Gyre 全套 |
+| 展示与书法 | 得意黑、站酷小薇、站酷庆科黄油体、站酷快乐体、马善政毛笔楷书、龙藏体 | Klee One（手书风）、Dela Gothic One | Oswald、Bebas Neue、League Spartan |
+| 度量兼容 Office 字体 | | | Liberation（Arial / Times New Roman / Courier New）、Carlito（Calibri）、Caladea（Cambria）、Gelasio（Georgia）、Comic Neue（Comic Sans） |
+| 等宽与其他 | Noto Sans Mono CJK | | JetBrains Mono、Fira Code、IBM Plex Mono、DejaVu Sans Mono；数学 STIX、Latin Modern；彩色 Emoji Noto Color Emoji |
+
+- **来源**：大部分是 Debian 官方包；Debian 没有的取自 Google Fonts 官方仓库（固定提交，git 按对象哈希校验）与朱雀仿宋的发布页（按 SHA-256 校验），都是 OFL 许可。
+  Google Fonts 的可变字体由 `image/static-fonts.py` 拆成各字重的静态字体：reportlab、fpdf2、matplotlib 只认静态字体的字重。
+- **朱雀仿宋改了族名**：原名带“(technical preview)”，weasyprint 拿族名拼 PDF 里的字体名时不转义括号，生成的 PDF 语法不合法。
+  构建时改成 `Zhuque Fangsong`（OFL 1.1，没有声明保留字体名，允许改名）。
+- **字体名映射**（`image/fonts.conf`）：Windows / macOS 文档里的宋体、微软雅黑、楷体、仿宋、新細明體、標楷體、ＭＳ 明朝、メイリオ、游ゴシック、맑은 고딕、
+  Georgia、Garamond、Palatino、Century Gothic 等字体名，映射到上面字形与用途最接近的字体，LibreOffice 转出的 PDF 不会乱换字体；
+  公文常用的方正小标宋映射到思源宋体粗体，方正仿宋到朱雀仿宋。没指定语言的汉字默认用简体字形。
 - **matplotlib 默认就能画中文**：`image/matplotlibrc` 装到 `/etc/matplotlibrc`，运行器经 `SANDBOX_COMMAND_ENV` 设 `MATPLOTLIBRC` 指向它。
   matplotlib 只在 `font.family` 列出的字体之间回退，所以那里写的是 `sans-serif, Noto Sans CJK SC`；画衬线中文时改成 `serif, Noto Serif CJK SC`。
 - **OCR 用官方高精度模型**（tessdata_best 4.1.0，构建时按 SHA-256 校验下载）：Debian 自带的是精简版，日文“稼働率”会认错。
@@ -97,8 +108,8 @@ URW base35、Roboto、Open Sans、Lato、FreeFont；数学有 STIX、Latin Moder
 - **模型可以自己装包**：`pip install x` 会自动装到账号的 `~/.local`（`/etc/pip.conf` 放开了 PEP 668 的限制），`~/.local/bin` 在 PATH 最前面；
   `npm install x` 装在当前目录。两者都要访问公网。
 
-没装的：LaTeX（约 1.5 GB；Markdown 转 PDF 用 `pandoc --pdf-engine=weasyprint`）、Java（tabula、pdftk 不可用，用 pdfplumber、qpdf 代替）、
-浏览器内核（plotly 只能出 HTML，静态图用 matplotlib）、Noto CJK 的细体与中粗等额外字重。
+没装的：LaTeX（XeLaTeX 加中日文支持装好后约 1.0 GB，完整版 8.4 GB；Markdown 转 PDF 用 `pandoc --pdf-engine=weasyprint`）、
+Java（tabula、pdftk 不可用，用 pdfplumber、qpdf 代替）、浏览器内核（plotly 只能出 HTML，静态图用 matplotlib）。
 
 ## 部署（Docker）
 

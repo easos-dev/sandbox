@@ -93,6 +93,56 @@ RUN pip install --no-cache-dir --break-system-packages \
       python-dateutil tqdm jieba wordcloud \
       csvkit
 
+# 设计用字体（为了排出好看的 PDF），放在 Python 包之后：改字体清单不会让前面的大层重建。
+# Debian 包：
+#   中文  思源黑体/宋体的全部字重（Thin～Black，标题与正文分出层次）、霞鹜文楷（LXGW WenKai）、得意黑（Smiley Sans）
+#   日文  BIZ UD 明朝/ゴシック（Windows 10 起自带的日文商务字体）、M+、さわらび明朝/ゴシック、モトヤ L シーダ/マルベリ（丸ゴシック）
+#   英文  Inter、Source Sans 3、TeX Gyre 全套（Palatino/Times/Helvetica/Bookman/Century 风格）、Linux Libertine、
+#         Montserrat、Roboto Slab、Vollkorn、Quicksand、Manrope、League Spartan、Comic Neue（Comic Sans 度量兼容）、
+#         Fira Code 与 JetBrains Mono（代码）
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      fonts-noto-cjk-extra fonts-lxgw-wenkai fonts-smiley-sans \
+      fonts-morisawa-bizud-gothic fonts-morisawa-bizud-mincho fonts-mplus fonts-sawarabi-gothic fonts-sawarabi-mincho \
+      fonts-motoya-l-cedar fonts-motoya-l-maruberi \
+      fonts-inter fonts-adobe-sourcesans3 fonts-texgyre fonts-linuxlibertine fonts-montserrat fonts-roboto-slab \
+      fonts-vollkorn fonts-quicksand fonts-manrope fonts-league-spartan fonts-comic-neue fonts-firacode fonts-jetbrains-mono \
+ && rm -rf /var/lib/apt/lists/*
+
+# Google Fonts 官方仓库（固定到下面这个提交，git 按对象哈希校验内容）里 Debian 没有的常用字体，约 190 MB：
+#   中文  站酷小薇、站酷庆科黄油体、站酷快乐体、马善政毛笔楷书、龙藏体（标题、海报、证书用）
+#   日文  Zen 角ゴシック New、Zen 丸ゴシック、Zen オールド明朝、しっぽり明朝、M PLUS Rounded 1c、Dela Gothic One、Klee One
+#   英文  Playfair Display、Merriweather、Lora、Source Serif 4、Libre Baskerville、Crimson Pro、EB Garamond、Poppins、Raleway、Nunito、
+#         Work Sans、DM Sans、Oswald、Bebas Neue、IBM Plex Sans/Serif/Mono、Gelasio（Georgia 度量兼容）
+# 只稀疏检出这些目录的 .ttf；可变字体由 image/static-fonts.py 拆成各字重的静态字体（原因见脚本开头）。
+# EB Garamond 用这里的版本而不用 Debian 包：Debian 包把 08、12 两种光学尺寸挂在同一字族名下，weasyprint 选粗体时会选错。
+COPY image/static-fonts.py /tmp/static-fonts.py
+RUN set -e; dest=/usr/share/fonts/truetype/google-fonts; \
+    dirs="zcoolxiaowei zcoolqingkehuangyou zcoolkuaile mashanzheng longcang \
+          zenkakugothicnew zenmarugothic zenoldmincho shipporimincho mplusrounded1c delagothicone kleeone \
+          playfairdisplay merriweather lora sourceserif4 librebaskerville crimsonpro ebgaramond poppins raleway nunito worksans dmsans \
+          oswald bebasneue ibmplexsans ibmplexserif ibmplexmono gelasio"; \
+    git init -q /tmp/gf && cd /tmp/gf && git remote add origin https://github.com/google/fonts.git \
+ && git fetch -q --depth 1 --filter=blob:none origin 47d54ca1ebb14fd864695f1d39dc734f39017c33 \
+ && git sparse-checkout init --no-cone \
+ && for d in $dirs; do echo "/ofl/$d/*.ttf"; echo "/ofl/$d/OFL.txt"; done > .git/info/sparse-checkout \
+ && git checkout -q FETCH_HEAD \
+ && for d in $dirs; do test -d "ofl/$d" || { echo "缺 $d" >&2; exit 1; }; mkdir -p "$dest/$d"; cp ofl/$d/*.ttf "$dest/$d/"; if [ -f ofl/$d/OFL.txt ]; then cp ofl/$d/OFL.txt "$dest/$d/"; fi; done \
+ && cd / && rm -rf /tmp/gf \
+ && python3 /tmp/static-fonts.py "$dest" && rm /tmp/static-fonts.py
+
+# 朱雀仿宋（OFL，TrionesType）：按国标字形设计的仿宋，比 cwTeX 仿宋（台湾字形）更适合简体公文；Windows 文档里的
+# 仿宋、仿宋_GB2312、方正仿宋都映射到它。只有预发布版，固定 v0.212 并按 SHA-256 校验。
+# 族名去掉“(technical preview)”“（预览测试版）”：weasyprint 拿族名拼 PDF 里的字体名，括号不转义，生成的 PDF 语法不合法
+# （2026-10-18 qpdf 实测报错）。许可证是 OFL 1.1 且没有声明保留字体名，允许改名；PostScript 名本来就是 ZhuqueFangsong-Regular。
+RUN cd /tmp \
+ && curl -fsSL --retry 3 -o zhuque.zip https://github.com/TrionesType/zhuque/releases/download/v0.212/ZhuqueFangsong-v0.212.zip \
+ && echo "bb8b661a7643d2296a72d9d10530a00949419c4e527fb61783f73c2ba1a8c062  zhuque.zip" | sha256sum -c - \
+ && mkdir -p /usr/share/fonts/truetype/zhuque && unzip -q -j zhuque.zip '*.ttf' -d /usr/share/fonts/truetype/zhuque \
+ && rm zhuque.zip \
+ && python3 -c 'from fontTools.ttLib import TTFont; p = "/usr/share/fonts/truetype/zhuque/ZhuqueFangsong-Regular.ttf"; f = TTFont(p); [setattr(r, "string", r.toUnicode().replace(" (technical preview)", "").replace("（预览测试版）", "")) for r in f["name"].names if r.nameID in (1, 3, 4, 16)]; f.save(p)' \
+ && test "$(fc-scan --format '%{family[0]}' /usr/share/fonts/truetype/zhuque/ZhuqueFangsong-Regular.ttf)" = "Zhuque Fangsong"
+
 COPY image/fonts.conf /etc/fonts/local.conf
 COPY image/pip.conf /etc/pip.conf
 COPY image/matplotlibrc /etc/matplotlibrc

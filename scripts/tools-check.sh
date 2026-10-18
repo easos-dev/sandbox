@@ -70,7 +70,9 @@ done <<'EOF'
 SimSun|Noto Serif CJK SC
 微软雅黑|Noto Sans CJK SC
 楷体|AR PL UKai CN
-仿宋|cwTeXFangSong
+仿宋|Zhuque Fangsong
+方正仿宋_GBK|Zhuque Fangsong
+方正小标宋简体|Noto Serif CJK SC
 標楷體|AR PL UKai TW
 新細明體|Noto Serif CJK TC
 ＭＳ 明朝|IPAexMincho
@@ -82,8 +84,77 @@ Cambria|Caladea
 Arial|Liberation Sans
 Times New Roman|Liberation Serif
 Courier New|Liberation Mono
+Georgia|Gelasio
+Garamond|EB Garamond
+Palatino Linotype|TeX Gyre Pagella
+Century Gothic|TeX Gyre Adventor
+Comic Sans MS|Comic Neue
+BIZ UDPGothic|BIZ UDPGothic
 EOF
 [ $font_map_ok = 1 ] && pass "字体名映射" "$font_detail" || fail "字体名映射" "$font_detail"
+# 5b. 设计用字体都在、字重齐全；可变字体都已拆成静态字体（reportlab、matplotlib 只认静态字体的字重）
+families=$(fc-list --format '%{family}\n' | tr ',' '\n' | sort -u)
+missing=""
+while IFS= read -r f; do grep -qxF "$f" <<<"$families" || missing="$missing [$f]"; done <<'FAMILIES'
+LXGW WenKai
+Smiley Sans
+ZCOOL XiaoWei
+ZCOOL QingKe HuangYou
+ZCOOL KuaiLe
+Ma Shan Zheng
+Long Cang
+Zhuque Fangsong
+BIZ UDPGothic
+BIZ UDPMincho
+M PLUS 1
+Sawarabi Mincho
+MotoyaLMaru
+Zen Kaku Gothic New
+Zen Maru Gothic
+Zen Old Mincho
+Shippori Mincho
+Rounded Mplus 1c
+Dela Gothic One
+Klee One
+Inter
+Source Sans 3
+Source Serif 4
+TeX Gyre Pagella
+EB Garamond
+Linux Libertine O
+Montserrat
+Playfair Display
+Merriweather
+Lora
+Libre Baskerville
+Crimson Pro
+Poppins
+Raleway
+Nunito
+Work Sans
+DM Sans
+Oswald
+Bebas Neue
+IBM Plex Sans
+IBM Plex Serif
+IBM Plex Mono
+Gelasio
+Roboto Slab
+Vollkorn
+Quicksand
+Manrope
+League Spartan
+Fira Code
+JetBrains Mono
+FAMILIES
+[ -z "$missing" ] && pass "设计字体齐全" "$(wc -l <<<"$families" | tr -d ' ') 个字族名" || fail "设计字体齐全" "缺:$missing"
+check "字重齐全且无可变字体残留" bash -c '
+for spec in "Noto Sans CJK SC:Thin" "Noto Sans CJK SC:Black" "Noto Serif CJK SC:ExtraLight" "Noto Serif CJK SC:Black" "Playfair Display:Bold" "Lora:Bold Italic" "Inter:Bold" "DM Sans:Bold" "Merriweather:Bold"; do
+  [ -n "$(fc-list ":family=${spec%%:*}:style=${spec#*:}")" ] || { echo "缺 $spec"; exit 1; }
+done
+left=$(find /usr/share/fonts/truetype/google-fonts -name "*\[*" | head -3); [ -z "$left" ] || { echo "还有可变字体: $left"; exit 1; }
+w=$(fc-match -f "%{weight}" "方正小标宋简体"); [ "$w" = 200 ] || { echo "方正小标宋简体 字重 $w，应为粗体 200"; exit 1; }
+echo "思源黑体 7 档字重；可变字体已全部拆开；方正小标宋映射为粗体"'
 check "彩色 Emoji 字体" bash -c 'fc-list | grep -q "Noto Color Emoji" && echo 有'
 
 # 6. matplotlib 画中文不成方块
@@ -115,6 +186,35 @@ python3 -c "import weasyprint; weasyprint.HTML(\"page.html\").write_pdf(\"page.p
 pdftotext page.pdf - | grep -q "稼働率" || { echo "抽不出文字"; exit 1; }
 pdffonts page.pdf | grep -qi "CJK" || { echo "没有嵌入 CJK 字体"; exit 1; }
 pdffonts page.pdf | awk "NR>2 {print \$1}" | sed "s/^[A-Z]*+//" | sort -u | tr "\n" " "'
+
+# 7b. 网页里写设计字体 → PDF 里嵌入的就是它们；reportlab 直接用拆出来的静态粗体
+check "设计字体进 PDF" bash -c '
+cat > design.html <<HTML
+<html><head><meta charset="utf-8"></head><body>
+<h1 style="font-family: Playfair Display; font-weight: 700">Quarterly Report</h1>
+<p style="font-family: LXGW WenKai">霞鹜文楷：本季度入住率稳步上升。</p>
+<p style="font-family: Zen Old Mincho">宿泊者名簿のご案内</p>
+<p style="font-family: Noto Sans CJK SC; font-weight: 900">思源黑体 Black 标题</p>
+</body></html>
+HTML
+python3 -c "import weasyprint; weasyprint.HTML(\"design.html\").write_pdf(\"design.pdf\")" 2>/dev/null
+fonts=$(pdffonts design.pdf | awk "NR>2 {print \$1}" | sed "s/^[A-Z]*+//" | sort -u | tr "\n" " ")
+# weasyprint 用连字符分词写字体名（Playfair-Display-Bold），思源黑体 Black 写作 Heavy；去掉连字符再比对。
+flat=$(printf "%s" "$fonts" | tr -d "-")
+for want in PlayfairDisplayBold LXGWWenKai ZenOldMincho; do case "$flat" in *"$want"*) ;; *) echo "缺 $want，实际: $fonts"; exit 1;; esac; done
+case "$flat" in *CJKSCHeavy*|*CJKSCBlack*) ;; *) echo "缺思源黑体 Black，实际: $fonts"; exit 1;; esac
+python3 - <<PY
+import subprocess
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
+path = subprocess.check_output(["fc-match", "-f", "%{file}", "Lora:Bold"], text=True)
+assert "Bold" in path, path
+pdfmetrics.registerFont(TTFont("LoraBold", path))
+c = canvas.Canvas("rl.pdf"); c.setFont("LoraBold", 24); c.drawString(72, 720, "Lora Bold via reportlab"); c.save()
+PY
+pdffonts rl.pdf | grep -q "Lora" || { echo "reportlab 没嵌入 Lora"; exit 1; }
+echo "$fonts；reportlab 用 Lora Bold"'
 
 # 8. docx 里写宋体、楷体 → LibreOffice 转 PDF → 嵌入的是映射后的字体
 check "Office 字体映射转 PDF" bash -c '
