@@ -11,7 +11,11 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/* \
  # 模板里不能带固定的 machine-id：留空文件，每个容器首次启动时自己生成。
  && truncate -s 0 /etc/machine-id \
- && rm -f /var/lib/dbus/machine-id
+ && rm -f /var/lib/dbus/machine-id \
+ # Proxmox 8.4.0 及更早的 pve-container 按 /etc/debian_version 判版本，只认到 13、不认 13.x 小版本
+ # （报 unsupported debian version '13.7'，2026-10-19 实测）。这里只写大版本号；真实版本在 /etc/os-release，
+ # apt 与系统本身不读这个文件。新版 pve-container 已改成只看整数部分，这一行对它无害。
+ && echo 13 > /etc/debian_version
 COPY lxc/easos-sandbox.service /etc/systemd/system/easos-sandbox.service
 COPY lxc/env /etc/easos-sandbox/env
 RUN chmod 644 /etc/systemd/system/easos-sandbox.service /etc/easos-sandbox/env \
