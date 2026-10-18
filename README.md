@@ -11,6 +11,8 @@ EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件�
 
 - **命名空间 = 系统账号。** 每个请求带 `X-User-Id`（小写字母、数字、连字符，≤ 32 字节），对应容器里一个同名系统账号，首次出现时建立：
   无 sudo、家目录 0700、互不可读。命令以该账号执行，新建的文件归它。与 Open Terminal 多用户模式的语义相同。
+  账号表在容器层里，家目录在卷里：容器重建后，账号在它下一次请求时按卷里家目录原来的 UID/GID 重建；
+  新账号分配 ID 时避开所有现存家目录的属主，不会抢走别人的 UID。
 - **会话目录** `~/conversations/<会话 ID>/`，接口里的路径一律相对它，规范化后拒绝 `..`、绝对路径与反斜杠；
   运行器自己打开文件时每一级都不跟随符号链接，命令摆不出能让运行器读到会话目录之外的路径。
 - **命令**：`bash -c`，工作目录是会话目录，环境只有 HOME、USER、LOGNAME、SHELL、PATH、LANG、TERM、PYTHONUNBUFFERED、MPLBACKEND；
@@ -19,7 +21,8 @@ EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件�
   执行记录另存一份小 JSON；运行器重启后凭执行号仍能查到"已结束（退出码）"或"未知（重启时还在跑）"，不恢复进行中的命令。
 - **文件接口**（全部 JSON）：下载到工作区、算指纹（大小、MIME、MD5、内容 ETag、CRC64-ECMA/NVME、分片 MD5）、
   算秒传持有证明（HMAC-SHA256）、按计划逐段 PUT、删整个会话目录。每个接口的形状与错误码见 [doc/接口.md](doc/接口.md)。
-- **网络**：允许公网。命令账号默认拒绝私网、链路本地与容器自身网段（保护数据库、ES 等内部服务），也禁止访问本机上运行器的端口；
+- **网络**：允许公网。命令账号拒绝 `SANDBOX_DENY_NETWORKS` 里的网段（默认是私网、运营商 NAT、链路本地、33 段与保留段，
+  数据库、ES 等内部服务和 Docker 分配的容器网段都在其中），也禁止访问本机上运行器的端口；其余回环流量放行，模型自己起的本地服务可用。
   运行器自己不受限（它只连助手交来的地址，其中可能有内网对象存储）。规则由 entrypoint 用 iptables 按 uid 配置，配完永久收回 NET_ADMIN。
 
 ## 目录
@@ -47,11 +50,19 @@ EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件�
 | `SANDBOX_LISTEN` | `0.0.0.0:8000` | 监听地址 |
 | `SANDBOX_HOME_ROOT` | `/home` | 命名空间账号的家目录根；镜像里把它做成卷 |
 | `SANDBOX_STATE_DIR` | `<家目录根>/.sandbox` | 执行记录目录（0700，归运行器） |
-| `SANDBOX_ALLOW_PRIVATE` | `0` | `1` 时命令账号可访问私网（entrypoint 读） |
+| `SANDBOX_DENY_NETWORKS` | 见下 | 命令账号拒绝访问的网段，逗号分隔的 CIDR，IPv4 与 IPv6 可混写；设成空串表示不拒绝任何网段（运行器端口仍禁止）；格式不对时容器拒绝启动（entrypoint 读） |
 | `SANDBOX_COMMAND_PATH` | 系统目录 | 命令环境里的 PATH |
 | `SANDBOX_UID_MIN` | `10000` | 命名空间账号从这个 UID 起分配；更低的名字视为系统账号拒绝 |
 | `SANDBOX_SHELL` | `/bin/bash` | 执行命令的 shell |
 | `SANDBOX_SINGLE_USER` | `0` | `1` 时不建账号、不切换，以当前用户执行；只用于本机开发与测试 |
+
+`SANDBOX_DENY_NETWORKS` 的默认值与助手读网页的内网拒绝清单一致，只去掉回环：
+
+```
+10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16,33.0.0.0/8,0.0.0.0/8,224.0.0.0/4,240.0.0.0/4,fc00::/7,fe80::/10
+```
+
+Docker 默认只从 172.17～172.31 与 192.168 里分配网段，所以容器自身所在的网段不必另加。
 
 ## 部署（Docker）
 
@@ -73,7 +84,8 @@ docker run -d --name easos-sandbox --restart unless-stopped \
 - `--cap-add NET_ADMIN` 只在启动时用来写 iptables 规则，入口脚本随即用 `capsh` 把它从 bounding set 里去掉；没有这个权限时只打警告照常启动，命令账号的网络不受限。
 - 容器以 root 跑运行器（要 `useradd` 与切换账号），`tini` 做 PID 1 回收孤儿进程。
 - 助手配置里填 `http://easos-sandbox:8000` 与密钥。三个 EasOS 环境共用一个沙箱时和 Open Terminal 的接法一样：挂到 `easos-db` 网络，`scripts/env.py` 再把它接进两端环境的网络。
-- 需要命令访问内网时加 `-e SANDBOX_ALLOW_PRIVATE=1`。
+- 要调整命令账号的拒绝清单时加 `-e SANDBOX_DENY_NETWORKS=<网段,…>`；放开全部网段用 `-e SANDBOX_DENY_NETWORKS=`。
+- 升级镜像就是删掉容器再按上面的命令重起，卷保留：账号会在各自下一次请求时按卷里的家目录重建，UID 不变。
 
 ## 本机运行与测试
 
@@ -85,8 +97,9 @@ curl -H 'Authorization: Bearer dev' -H 'X-User-Id: user-dev' -d '{"conversation_
 
 单用户模式下账号目录就是 `<家目录根>/<X-User-Id>`，命令以当前用户执行；路径与符号链接的检查照常生效。
 
-镜像建好后用 `python3 scripts/smoke.py [镜像名]` 冒烟：起容器，核对 Python 数据栈、账号隔离、指纹、公网可达与私网拒绝、
-NET_ADMIN 已收回、LibreOffice 转 PDF、超时与删会话，打印镜像大小与各步耗时，最后删容器。
+镜像建好后用 `python3 scripts/smoke.py [镜像名]` 冒烟：起容器，核对 Python 数据栈、账号隔离、指纹、公网可达与默认拒绝清单、
+密钥文件不可读、NET_ADMIN 已收回、LibreOffice 转 PDF、超时、容器重建后账号沿用原 UID、删会话，另起容器核对拒绝清单设空与写错、
+密钥文件挂错位置；打印镜像大小与各步耗时，最后删掉容器、临时卷与临时密钥文件。
 
 ## 边界与未做
 

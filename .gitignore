@@ -3,3 +3,5 @@
 # 本地构建与冒烟的记录（日志、耗时），不是源码。
 /.checks/
 .DS_Store
+# Python 字节码缓存（py_compile、直接运行脚本时生成）。
+__pycache__/

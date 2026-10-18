@@ -17,7 +17,7 @@ FROM debian:trixie-slim
 ENV DEBIAN_FRONTEND=noninteractive
 # 运行时软件清单（与 Open Terminal 完整镜像的常用部分对齐，不含 LaTeX 与 Node）：
 #   基础工具      bash curl ca-certificates procps jq unzip zip git
-#   网络隔离      iptables（出站规则）libcap2-bin（capsh 收回 NET_ADMIN）iproute2（读容器网段）
+#   网络隔离      iptables（出站规则）libcap2-bin（capsh 收回 NET_ADMIN）
 #   PID 1         tini
 #   Python 数据栈 python3 + pip 装的包（下一层）
 #   办公文档      LibreOffice 的 Calc/Writer/Impress（无界面转换 PDF/xlsx/docx），不装 Java
@@ -25,7 +25,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       bash curl ca-certificates procps jq unzip zip git \
-      iptables libcap2-bin iproute2 tini \
+      iptables libcap2-bin tini \
       python3 python3-pip python3-venv \
       libreoffice-calc libreoffice-writer libreoffice-impress \
       fonts-noto-cjk fonts-liberation fonts-dejavu-core \

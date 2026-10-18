@@ -3,11 +3,13 @@
 //! 单用户模式不建账号、不切换，只在家目录根下建同名目录，供本机开发与集成测试。
 
 use crate::config::Config;
-use crate::server::ApiError;
 use crate::paths::Owner;
+use crate::server::ApiError;
 use http::StatusCode;
-use std::collections::HashMap;
-use std::path::PathBuf;
+use nix::unistd::{Gid, Group, Uid, User};
+use std::collections::{HashMap, HashSet};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// 账号名长度上限：Linux 用户名的上限。
@@ -90,7 +92,7 @@ impl Accounts {
         let user = match lookup(name)? {
             Some(user) => user,
             None => {
-                self.useradd(name, &home).await?;
+                self.create(name, &home).await?;
                 lookup(name)?.ok_or_else(|| ApiError::internal(format!("useradd 之后仍查不到账号 {name}")))?
             }
         };
@@ -112,42 +114,147 @@ impl Accounts {
         })
     }
 
-    /// 建系统账号：自带同名组、家目录 0700、登录 shell 为 bash；UID/GID 从 uid_min 起分配，与系统账号区分。
-    async fn useradd(&self, name: &str, home: &std::path::Path) -> Result<(), ApiError> {
-        let min = self.cfg.uid_min;
-        let max = min + 50_000;
-        let output = tokio::process::Command::new("useradd")
-            .args(["--create-home", "--home-dir"])
-            .arg(home)
-            .args(["--shell", "/bin/bash", "--user-group"])
-            .args(["--key", &format!("UID_MIN={min}"), "--key", &format!("UID_MAX={max}")])
-            .args(["--key", &format!("GID_MIN={min}"), "--key", &format!("GID_MAX={max}")])
-            .arg(name)
-            .output()
-            .await
-            .map_err(|e| ApiError::internal(format!("运行 useradd 失败：{e}")))?;
-        if !output.status.success() {
-            return Err(ApiError::internal(format!(
-                "useradd {name} 失败（{}）：{}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
+    /// 建系统账号：同名组、家目录 0700、登录 shell 为 bash，UID 与 GID 在 [uid_min, uid_min + ID_SPAN] 内。
+    ///
+    /// 账号表（/etc/passwd、/etc/group）在容器层里，家目录在卷里：容器重建后账号没了，家目录还在。
+    /// 所以家目录已存在时沿用它原来的属主与属组重建账号，模型才访问得到自己以前的文件；
+    /// 新账号的 ID 则避开家目录根下所有目录的属主与属组（见 free_id）。
+    async fn create(&self, name: &str, home: &Path) -> Result<(), ApiError> {
+        let (min, max) = (self.cfg.uid_min, self.cfg.uid_min + ID_SPAN);
+        let existing = match std::fs::symlink_metadata(home) {
+            Ok(meta) => Some(meta),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(ApiError::internal(format!("查看 {} 失败：{e}", home.display()))),
+        };
+        let (uid, gid, create_home) = match existing {
+            Some(meta) => {
+                if !meta.file_type().is_dir() {
+                    return Err(ApiError::internal(format!("{} 已存在但不是目录", home.display())));
+                }
+                let (uid, gid) = (meta.uid(), meta.gid());
+                if !(min..=max).contains(&uid) || !(min..=max).contains(&gid) {
+                    return Err(ApiError::new(
+                        StatusCode::FORBIDDEN,
+                        "namespace_reserved",
+                        format!("{} 的属主 {uid}:{gid} 不在沙箱账号的范围内，不是沙箱建立的家目录", home.display()),
+                    ));
+                }
+                if let Some(other) = User::from_uid(Uid::from_raw(uid)).map_err(query_failed)? {
+                    return Err(ApiError::internal(format!(
+                        "{} 的属主 UID {uid} 已被账号 {} 占用",
+                        home.display(),
+                        other.name
+                    )));
+                }
+                (uid, gid, false)
+            }
+            None => {
+                let id = self.free_id(min, max)?;
+                (id, id, true)
+            }
+        };
+        match Group::from_name(name).map_err(query_failed)? {
+            Some(group) if group.gid.as_raw() == gid => {}
+            Some(group) => {
+                return Err(ApiError::internal(format!("组 {name} 已存在，但 GID 是 {} 而不是 {gid}", group.gid)));
+            }
+            None => {
+                if let Some(other) = Group::from_gid(Gid::from_raw(gid)).map_err(query_failed)? {
+                    return Err(ApiError::internal(format!("GID {gid} 已被组 {} 占用", other.name)));
+                }
+                run("groupadd", &["--gid", &gid.to_string(), name]).await?;
+            }
         }
+        let home_text = home.to_string_lossy();
+        let home_flag = if create_home { "--create-home" } else { "--no-create-home" };
+        run(
+            "useradd",
+            &[
+                "--uid", &uid.to_string(), "--gid", &gid.to_string(), "--home-dir", &home_text, home_flag,
+                "--shell", "/bin/bash", name,
+            ],
+        )
+        .await?;
         // login.defs 的 HOME_MODE 因发行版而异，这里明确收成 0700：家目录互不可读是隔离的基础。
         std::fs::set_permissions(home, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .map_err(|e| ApiError::internal(format!("设置 {} 权限失败：{e}", home.display())))?;
-        println!("已建立命名空间账号 {name}");
+        if create_home {
+            println!("已建立命名空间账号 {name}（UID {uid}）");
+        } else {
+            println!("已按卷里现有的家目录重建命名空间账号 {name}（UID {uid}）");
+        }
         Ok(())
+    }
+
+    /// 给新账号挑一个 ID（UID 与 GID 取同一个数）：在分配范围内，系统里没有这个 UID 与 GID，
+    /// 也不是家目录根下任何目录的属主或属组。最后一条针对容器重建：旧家目录的账号要等它自己的请求来才重建，
+    /// 在那之前新账号不能先占走它的 UID，否则新账号就成了别人家目录的属主，读得到别人的文件。
+    fn free_id(&self, min: u32, max: u32) -> Result<u32, ApiError> {
+        let mut reserved = HashSet::new();
+        let entries = std::fs::read_dir(&self.cfg.home_root)
+            .map_err(|e| ApiError::internal(format!("读 {} 失败：{e}", self.cfg.home_root.display())))?;
+        for entry in entries.flatten() {
+            if let Ok(meta) = entry.path().symlink_metadata() {
+                reserved.insert(meta.uid());
+                reserved.insert(meta.gid());
+            }
+        }
+        // 查询出错时按“已占用”处理：宁可跳过一个号，也不冒险复用。
+        let taken = |id: u32| {
+            User::from_uid(Uid::from_raw(id)).map(|u| u.is_some()).unwrap_or(true)
+                || Group::from_gid(Gid::from_raw(id)).map(|g| g.is_some()).unwrap_or(true)
+        };
+        pick_id(min, max, &reserved, taken)
+            .ok_or_else(|| ApiError::internal(format!("命名空间账号的 ID（{min}～{max}）已用完")))
     }
 }
 
-fn lookup(name: &str) -> Result<Option<nix::unistd::User>, ApiError> {
-    nix::unistd::User::from_name(name).map_err(|e| ApiError::internal(format!("查账号 {name} 失败：{e}")))
+/// 账号 ID 的分配跨度：从 uid_min 起五万个，足够多，也远离 nobody（65534）。
+const ID_SPAN: u32 = 50_000;
+
+/// 在 [min, max] 里找第一个既不在 reserved 里、也没被 taken 判为已占用的 ID。
+fn pick_id(min: u32, max: u32, reserved: &HashSet<u32>, taken: impl Fn(u32) -> bool) -> Option<u32> {
+    (min..=max).find(|id| !reserved.contains(id) && !taken(*id))
+}
+
+fn lookup(name: &str) -> Result<Option<User>, ApiError> {
+    User::from_name(name).map_err(|e| ApiError::internal(format!("查账号 {name} 失败：{e}")))
+}
+
+fn query_failed(e: nix::errno::Errno) -> ApiError {
+    ApiError::internal(format!("查系统账号表失败：{e}"))
+}
+
+/// 运行一个管理命令（groupadd / useradd），失败时把 stderr 带进错误。
+async fn run(program: &str, args: &[&str]) -> Result<(), ApiError> {
+    let output = tokio::process::Command::new(program)
+        .args(args)
+        .output()
+        .await
+        .map_err(|e| ApiError::internal(format!("运行 {program} 失败：{e}")))?;
+    if !output.status.success() {
+        return Err(ApiError::internal(format!(
+            "{program} {} 失败（{}）：{}",
+            args.join(" "),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 新账号的_id_避开旧家目录与已占用的号() {
+        // 旧家目录占着 10000 与 10002，系统里 10001 已被占用：新账号拿 10003。
+        let reserved: HashSet<u32> = [0, 10000, 10002].into_iter().collect();
+        assert_eq!(pick_id(10000, 10010, &reserved, |id| id == 10001), Some(10003));
+        assert_eq!(pick_id(10000, 10000, &reserved, |_| false), None, "范围用完");
+        assert_eq!(pick_id(10000, 10010, &HashSet::new(), |_| false), Some(10000));
+    }
 
     #[test]
     fn 账号名只认小写字母数字连字符() {
