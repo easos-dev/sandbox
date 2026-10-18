@@ -35,6 +35,7 @@ impl Runner {
             .env("SANDBOX_LISTEN", "127.0.0.1:0")
             .env("SANDBOX_API_KEY", KEY)
             .env("SANDBOX_HOME_ROOT", home)
+            .env("SANDBOX_COMMAND_ENV", "NODE_PATH=/opt/node-test")
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::inherit())
             .spawn()
@@ -321,6 +322,11 @@ async fn 执行_输出尾部_停止_超时_重启后查记录() {
     assert!(out.contains(&format!("{}\n", conv_dir.display())), "工作目录是会话目录：{out}");
     assert!(out.contains(&format!("HOME={}\n", home.join(NS).display())));
     assert!(!out.contains(KEY) && !out.contains("SANDBOX_"), "密钥与运行器配置不得进入命令环境：{out}");
+    assert!(out.contains("NODE_PATH=/opt/node-test\n"), "SANDBOX_COMMAND_ENV 里的变量进入命令环境：{out}");
+    assert!(
+        out.contains(&format!("PATH={}/.local/bin:", home.join(NS).display())),
+        "PATH 最前面是账号的 ~/.local/bin：{out}"
+    );
     let id = view["id"].as_str().unwrap().to_owned();
     assert_eq!(id.len(), 16);
     assert_eq!(view["output_path"], format!("out/{id}.txt"));

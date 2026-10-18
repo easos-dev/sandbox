@@ -1,0 +1,13 @@
+# 沙箱镜像的 matplotlib 默认配置，装到 /etc/matplotlibrc，运行器经环境变量 MATPLOTLIBRC 指向这里。
+# 只写与默认值不同的几项，其余沿用 matplotlib 自带的默认配置。
+
+# 沙箱没有显示器，固定无界面后端（运行器也设了 MPLBACKEND=Agg）。
+backend: Agg
+
+# 中文字体回退：matplotlib 的回退只在 font.family 列出的字体之间进行，通用族 sans-serif 只取 font.sans-serif 的第一个，
+# 所以要把 Noto Sans CJK SC 直接列进 font.family：西文用 DejaVu Sans，它没有的字（汉字、假名、谚文）落到思源黑体。
+# 想画衬线中文时改成 font.family: serif, Noto Serif CJK SC。
+font.family: sans-serif, Noto Sans CJK SC
+
+# CJK 字体里没有 unicode 负号（U+2212），坐标轴负数改用连字符，避免出现方块。
+axes.unicode_minus: False

@@ -300,15 +300,18 @@ impl Executions {
             .map_err(|e| ApiError::internal(format!("复制输出管道失败：{e}")))?;
         let child = {
             let mut cmd = tokio::process::Command::new(&cfg.shell);
-            cmd.arg("-c")
-                .arg(command)
-                .current_dir(&workspace.path)
-                .env_clear()
-                .env("HOME", &account.home)
+            cmd.arg("-c").arg(command).current_dir(&workspace.path).env_clear();
+            // 先设配置里的额外变量，再设固定变量：固定的 HOME、USER、PATH 等总是覆盖它们。
+            for (name, value) in &cfg.command_env {
+                cmd.env(name, value);
+            }
+            // PATH 最前面是账号自己的 ~/.local/bin：模型 pip install 的包（系统目录不可写时 pip 自动装到 ~/.local）带的命令能直接用。
+            let path = format!("{}/.local/bin:{}", account.home.display(), cfg.command_path);
+            cmd.env("HOME", &account.home)
                 .env("USER", &account.name)
                 .env("LOGNAME", &account.name)
                 .env("SHELL", &cfg.shell)
-                .env("PATH", &cfg.command_path)
+                .env("PATH", path)
                 .env("LANG", "C.UTF-8")
                 .env("TERM", "dumb")
                 // Python 对管道默认全缓冲，不设的话输出要到结束才看得到；matplotlib 没有显示器，固定无界面后端。

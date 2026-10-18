@@ -22,8 +22,11 @@ pub struct Config {
     pub state_dir: PathBuf,
     /// 单用户模式（`SANDBOX_SINGLE_USER=1`）：不建系统账号、不切换账号，一切以当前用户执行；只用于本机开发与测试。
     pub single_user: bool,
-    /// 命令环境里的 PATH（`SANDBOX_COMMAND_PATH`）。
+    /// 命令环境里 PATH 的系统部分（`SANDBOX_COMMAND_PATH`）；运行器会在它前面加上账号的 `~/.local/bin`。
     pub command_path: String,
+    /// 额外给每条命令设的环境变量（`SANDBOX_COMMAND_ENV`，分号或换行分隔的 `名=值`），例如镜像里 Node 全局包的
+    /// NODE_PATH。只放与镜像布局有关的固定值，绝不放密钥；运行器固定设的 HOME、USER、PATH 等不能被它覆盖。
+    pub command_env: Vec<(String, String)>,
     /// 命名空间账号的最小 UID（`SANDBOX_UID_MIN`，默认 10000）。
     pub uid_min: u32,
     /// 执行命令用的 shell（`SANDBOX_SHELL`，默认 /bin/bash），以 `-c` 方式执行。
@@ -45,6 +48,7 @@ impl Config {
             .unwrap_or_else(|_| home_root.join(".sandbox"));
         let single_user = flag("SANDBOX_SINGLE_USER");
         let command_path = std::env::var("SANDBOX_COMMAND_PATH").unwrap_or_else(|_| DEFAULT_COMMAND_PATH.into());
+        let command_env = parse_command_env(&std::env::var("SANDBOX_COMMAND_ENV").unwrap_or_default())?;
         let uid_min = match std::env::var("SANDBOX_UID_MIN") {
             Ok(text) => text.parse().with_context(|| format!("SANDBOX_UID_MIN 不是整数：{text}"))?,
             Err(_) => DEFAULT_UID_MIN,
@@ -57,11 +61,32 @@ impl Config {
             state_dir,
             single_user,
             command_path,
+            command_env,
             uid_min,
             shell,
         })
     }
 }
+
+/// 解析 `SANDBOX_COMMAND_ENV`：分号或换行分隔的 `名=值`，空项忽略。名字只接受大写字母、数字与下划线且不以数字开头；
+/// 以 `SANDBOX_` 开头的名字拒绝，免得把运行器自己的配置（含密钥文件路径）带进命令环境。
+fn parse_command_env(text: &str) -> Result<Vec<(String, String)>> {
+    let mut vars = Vec::new();
+    for item in text.split([';', '\n']).map(str::trim).filter(|s| !s.is_empty()) {
+        let Some((name, value)) = item.split_once('=') else {
+            bail!("SANDBOX_COMMAND_ENV 的 \"{item}\" 不是 名=值");
+        };
+        let valid = !name.is_empty()
+            && name.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            && !name.as_bytes()[0].is_ascii_digit();
+        if !valid || name.starts_with("SANDBOX_") {
+            bail!("SANDBOX_COMMAND_ENV 的变量名 \"{name}\" 不合法（只能大写字母、数字、下划线，不能以 SANDBOX_ 开头）");
+        }
+        vars.push((name.to_owned(), value.to_owned()));
+    }
+    Ok(vars)
+}
+
 
 /// 布尔开关：`1`、`true`、`yes`（不分大小写）为开。
 fn flag(name: &str) -> bool {
@@ -82,5 +107,22 @@ fn env_or_file(name: &str) -> Result<Option<String>> {
             Ok(Some(text.trim().to_owned()))
         }
         (None, None) => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 命令额外环境变量的解析() {
+        assert_eq!(
+            parse_command_env("NODE_PATH=/usr/local/lib/node_modules; A_1=x=y\n\n").unwrap(),
+            vec![("NODE_PATH".into(), "/usr/local/lib/node_modules".into()), ("A_1".into(), "x=y".into())]
+        );
+        assert!(parse_command_env("").unwrap().is_empty());
+        for bad in ["NOVALUE", "lower=1", "1A=1", "SANDBOX_API_KEY=x", "=x", "A B=1"] {
+            assert!(parse_command_env(bad).is_err(), "{bad}");
+        }
     }
 }

@@ -2,7 +2,8 @@
 """镜像冒烟：起容器，走一遍
 健康检查、python3 数据栈、以命名空间账号执行与干净环境、写文件后 stat、跨命名空间隔离、
 命令账号的公网可达 / 默认拒绝清单（私网、33 段）/ 运行器端口拒绝 / 读不到密钥文件、运行器已收回 NET_ADMIN、
-LibreOffice 转 PDF、超时终止、容器重建后账号沿用旧家目录的 UID 且新账号不抢号、删会话，
+LibreOffice 转 PDF、超时终止、镜像工具逐项核对（scripts/tools-check.sh，以命名空间账号执行）、
+容器重建后账号沿用旧家目录的 UID 且新账号不抢号、删会话，
 以及另起容器检查：拒绝清单设为空、拒绝清单写错、密钥文件挂错位置。
 打印镜像大小与每步耗时，最后删掉容器、临时卷与临时密钥文件。
 
@@ -31,6 +32,8 @@ KEY = f"smoke-{int(time.time())}"
 # 冒烟用的密钥文件放在仓库忽略的 .checks/ 里，跑完删掉；容器里挂在只有 root 能进的 /root 下。
 KEY_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".checks", f"smoke-key-{os.getpid()}")
 KEY_IN_CONTAINER = "/root/.sandbox-key"
+# 工具核对脚本：整段作为命令交给 /execute，以命名空间账号在容器里跑。
+TOOLS_CHECK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tools-check.sh")
 # 宿主机上映射的端口；容器内固定 8000。
 PORT = 18000
 BASE = f"http://127.0.0.1:{PORT}"
@@ -206,6 +209,16 @@ def main():
 
         view, out = run("sleep 20", timeout=1)
         check("超时终止", view["status"] == "timeout", view["status"])
+
+        started = time.time()
+        with open(TOOLS_CHECK, encoding="utf-8") as script:
+            view, out = run(script.read())
+        for line in out.splitlines():
+            if line.startswith(("通过  ", "失败  ")):
+                verdict, _, rest = line.partition("  ")
+                item, _, detail = rest.partition("  ")
+                check(f"工具：{item}", verdict == "通过", detail)
+        check("工具核对脚本跑完", view["status"] == "done", f"{view['status']}，退出码 {view.get('exit_code')}，{time.time() - started:.0f}s")
 
         # 容器重建：账号表随容器层消失，家目录留在卷里。先让一个新账号来，它不能拿走旧账号的 UID；
         # 再让旧账号来，它要沿用旧家目录的 UID，看得到自己的旧文件，新账号看不到它的家目录。

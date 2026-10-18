@@ -40,6 +40,8 @@ EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件�
 | `src/checksum.rs`、`src/mime.rs` | 指纹与 MIME 推断的纯计算 |
 | `tests/local.rs` | 不依赖 Docker 的集成测试（单用户模式起真进程） |
 | `Dockerfile`、`entrypoint.sh` | 镜像与入口（网络规则） |
+| `image/` | 装进镜像的配置：字体名映射 `fonts.conf`、`matplotlibrc`、`pip.conf` |
+| `scripts/smoke.py`、`scripts/tools-check.sh` | 镜像冒烟；镜像工具逐项核对 |
 | `doc/接口.md` | 接口文档 |
 
 ## 配置项（环境变量）
@@ -51,7 +53,8 @@ EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件�
 | `SANDBOX_HOME_ROOT` | `/home` | 命名空间账号的家目录根；镜像里把它做成卷 |
 | `SANDBOX_STATE_DIR` | `<家目录根>/.sandbox` | 执行记录目录（0700，归运行器） |
 | `SANDBOX_DENY_NETWORKS` | 见下 | 命令账号拒绝访问的网段，逗号分隔的 CIDR，IPv4 与 IPv6 可混写；设成空串表示不拒绝任何网段（运行器端口仍禁止）；格式不对时容器拒绝启动（entrypoint 读） |
-| `SANDBOX_COMMAND_PATH` | 系统目录 | 命令环境里的 PATH |
+| `SANDBOX_COMMAND_PATH` | 系统目录 | 命令环境里 PATH 的系统部分；运行器在它前面加上账号的 `~/.local/bin` |
+| `SANDBOX_COMMAND_ENV` | 镜像里为 `NODE_PATH=/usr/local/lib/node_modules;MATPLOTLIBRC=/etc/matplotlibrc` | 额外给每条命令设的环境变量，分号或换行分隔的 `名=值`；名字只能大写字母、数字、下划线，不能以 `SANDBOX_` 开头，不能覆盖 HOME、USER、PATH 等固定变量；绝不放密钥 |
 | `SANDBOX_UID_MIN` | `10000` | 命名空间账号从这个 UID 起分配；更低的名字视为系统账号拒绝 |
 | `SANDBOX_SHELL` | `/bin/bash` | 执行命令的 shell |
 | `SANDBOX_SINGLE_USER` | `0` | `1` 时不建账号、不切换，以当前用户执行；只用于本机开发与测试 |
@@ -63,6 +66,39 @@ EasOS 助手（`mods/assistant`）里模型的"电脑"：跑命令、放附件�
 ```
 
 Docker 默认只从 172.17～172.31 与 192.168 里分配网段，所以容器自身所在的网段不必另加。
+
+## 镜像里的工具
+
+基础是 Debian trixie，Python 3.13、Node 20，镜像约 4 GB（系统包与字体 2 GB、Python 包 1.5 GB、Node 包 0.2 GB）。
+下面的工具都已预装，命令里直接用；`scripts/tools-check.sh` 逐项真用一遍核对。
+
+| 类别 | 命令行 | Python | Node |
+| --- | --- | --- | --- |
+| PDF | poppler（pdftotext、pdftoppm、pdfimages、pdffonts、pdfinfo）、qpdf、ghostscript、mutool | pypdf、pdfplumber、PyMuPDF（fitz）、pikepdf、pdf2image、reportlab、fpdf2、weasyprint（HTML 转 PDF）、img2pdf | pdf-lib |
+| OCR | tesseract（官方高精度模型：简体、繁体、日文横排与竖排、英文）、ocrmypdf（给扫描 PDF 加文字层） | ocrmypdf | |
+| Office | LibreOffice Writer/Calc/Impress/Draw（`soffice --headless --convert-to`）、pandoc | openpyxl、xlsxwriter、xlrd、pyxlsb、odfpy、python-docx、docxtpl、python-pptx、mammoth、msoffcrypto-tool、xlsx2csv、uno（驱动 LibreOffice） | pptxgenjs、docx、exceljs |
+| 图片与音视频 | ImageMagick（magick）、vips、ffmpeg、exiftool、cwebp、optipng、pngquant、jpegoptim、rsvg-convert、graphviz（dot） | Pillow、pillow-heif、OpenCV（headless）、scikit-image、imageio、cairosvg、qrcode、pyzbar、graphviz | sharp |
+| 数据分析 | sqlite3、csvkit（in2csv、csvsql、csvstat）、jq | pandas、numpy、scipy、scikit-learn、statsmodels、polars、pyarrow、duckdb、sympy、networkx、matplotlib、seaborn、plotly | csv-parse、csv-stringify |
+| 文本与网络 | ripgrep（rg）、fd（fdfind）、tree、file、curl、wget、git | requests、httpx、beautifulsoup4、lxml、html5lib、markdown、jinja2、pyyaml、tabulate、chardet、python-dateutil、tqdm、jieba、wordcloud | marked、typescript、tsx |
+| 压缩 | zip/unzip、7z、xz、bzip2、zstd、unar（含 rar） | | |
+
+**字体**：中文有 Noto CJK（思源黑体与宋体，简繁日韩各一套字形）、文鼎 PL 楷体与明体、文泉驿、cwTeX 仿宋与楷书；日文有 IPAex / IPA 明朝与ゴシック；
+西文有 Noto、DejaVu、Liberation（与 Arial、Times New Roman、Courier New 度量兼容）、Carlito / Caladea（与 Calibri、Cambria 度量兼容）、
+URW base35、Roboto、Open Sans、Lato、FreeFont；数学有 STIX、Latin Modern；彩色 Emoji 有 Noto Color Emoji。
+
+- **字体名映射**（`image/fonts.conf`）：Windows / macOS 文档里的宋体、微软雅黑、楷体、仿宋、新細明體、標楷體、ＭＳ 明朝、メイリオ、游ゴシック、맑은 고딕等字体名，
+  映射到上面字形与用途最接近的字体，LibreOffice 转出的 PDF 不会乱换字体。没指定语言的汉字默认用简体字形。
+- **matplotlib 默认就能画中文**：`image/matplotlibrc` 装到 `/etc/matplotlibrc`，运行器经 `SANDBOX_COMMAND_ENV` 设 `MATPLOTLIBRC` 指向它。
+  matplotlib 只在 `font.family` 列出的字体之间回退，所以那里写的是 `sans-serif, Noto Sans CJK SC`；画衬线中文时改成 `serif, Noto Serif CJK SC`。
+- **OCR 用官方高精度模型**（tessdata_best 4.1.0，构建时按 SHA-256 校验下载）：Debian 自带的是精简版，日文“稼働率”会认错。
+  tesseract 默认的版面分析面向整页，只有一行字的小图要加 `--psm 7`。
+- **HTML 转 PDF 要声明编码**：weasyprint 读本地 HTML 文件时，没有 `<meta charset="utf-8">` 就按 windows-1252 解码，中文成乱码。
+- **Node 全局包直接 `require`**：运行器经 `SANDBOX_COMMAND_ENV` 给命令设了 `NODE_PATH`。
+- **模型可以自己装包**：`pip install x` 会自动装到账号的 `~/.local`（`/etc/pip.conf` 放开了 PEP 668 的限制），`~/.local/bin` 在 PATH 最前面；
+  `npm install x` 装在当前目录。两者都要访问公网。
+
+没装的：LaTeX（约 1.5 GB；Markdown 转 PDF 用 `pandoc --pdf-engine=weasyprint`）、Java（tabula、pdftk 不可用，用 pdfplumber、qpdf 代替）、
+浏览器内核（plotly 只能出 HTML，静态图用 matplotlib）、Noto CJK 的细体与中粗等额外字重。
 
 ## 部署（Docker）
 
@@ -106,4 +142,4 @@ curl -H 'Authorization: Bearer dev' -H 'X-User-Id: user-dev' -d '{"conversation_
 - 用户隔离之外的加固（seccomp、资源配额、进程数上限）未做；命令用 `setsid` 脱离进程组的后代不会被超时或停止波及。
 - 输出文件 `out/<执行号>.txt` 与工作区不自动清理；执行记录随 `DELETE /conversations/{id}` 一起删除，不另设定时清理。
 - 没有文件面板接口、没有 WebSocket；运行器不对接 File，只认助手交来的地址与上传计划。
-- 镜像不含 LaTeX 与 Node（Open Terminal 完整镜像有）；Python 是 Debian trixie 的 3.13。
+- 镜像不含 LaTeX、Java 与浏览器内核，见“镜像里的工具”最后一段。
