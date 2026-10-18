@@ -72,7 +72,7 @@ pub fn hex_decode(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-/// 一个分片的位置与 MD5。
+/// 一个分片的位置与校验值。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Part {
     /// 分片在文件里的起点（字节）。
@@ -81,12 +81,16 @@ pub struct Part {
     pub length: u64,
     /// 分片内容的 MD5，小写十六进制（填 Content-MD5 头时由调用方转 base64）。
     pub md5: String,
+    /// 分片内容的 CRC-64/NVME，十进制；S3/MinIO 分片上传时 File 把它签进这一片的请求头。
+    pub crc64_nvme: String,
 }
 
 /// 一遍流式算出全部指纹。
 pub struct Fingerprint {
     whole: md5::Md5,
     part: md5::Md5,
+    /// 当前这一片的 CRC-64/NVME。
+    part_nvme: Crc64,
     /// 当前这一片已经喂进去的字节数。
     part_filled: u64,
     /// 已完成的各片 MD5（二进制），算内容 ETag 用。
@@ -125,6 +129,7 @@ impl Fingerprint {
         Self {
             whole: md5::Md5::new(),
             part: md5::Md5::new(),
+            part_nvme: Crc64::nvme(),
             part_filled: 0,
             part_digests: Vec::new(),
             parts: Vec::new(),
@@ -144,6 +149,7 @@ impl Fingerprint {
             let room = (PART_SIZE - self.part_filled) as usize;
             let take = room.min(bytes.len());
             self.part.update(&bytes[..take]);
+            self.part_nvme.update(&bytes[..take]);
             self.part_filled += take as u64;
             bytes = &bytes[take..];
             if self.part_filled == PART_SIZE {
@@ -152,14 +158,16 @@ impl Fingerprint {
         }
     }
 
-    /// 结束当前这一片：记下它的 MD5，开始新的一片。
+    /// 结束当前这一片：记下它的 MD5 与 CRC-64/NVME，开始新的一片。
     fn close_part(&mut self) {
         let digest: [u8; 16] = std::mem::replace(&mut self.part, md5::Md5::new()).finalize().into();
+        let nvme = std::mem::replace(&mut self.part_nvme, Crc64::nvme()).finish();
         let offset = self.size - self.part_filled;
         self.parts.push(Part {
             offset,
             length: self.part_filled,
             md5: hex(&digest),
+            crc64_nvme: nvme.to_string(),
         });
         self.part_digests.push(digest);
         self.part_filled = 0;
@@ -243,7 +251,7 @@ mod tests {
         assert_eq!(d.etag, d.md5, "单片时内容 ETag 就是整个文件的 MD5");
         assert_eq!(d.crc64_ecma, 0x995D_C9BB_DF19_39FAu64.to_string());
         assert_eq!(d.crc64_nvme, 0xAE8B_1486_0A79_9888u64.to_string());
-        assert_eq!(d.parts, vec![Part { offset: 0, length: 9, md5: d.md5.clone() }]);
+        assert_eq!(d.parts, vec![Part { offset: 0, length: 9, md5: d.md5.clone(), crc64_nvme: d.crc64_nvme.clone() }]);
 
         let empty = Fingerprint::new().finish();
         assert_eq!(empty.md5, "d41d8cd98f00b204e9800998ecf8427e");
@@ -266,7 +274,21 @@ mod tests {
         assert_eq!(one, many);
         assert_eq!(one.parts.len(), 2);
         assert_eq!(one.parts[0].length, PART_SIZE);
-        assert_eq!(one.parts[1], Part { offset: PART_SIZE, length: 3, md5: hex(&md5::Md5::digest(&data[PART_SIZE as usize..])) });
+        let nvme_of = |bytes: &[u8]| {
+            let mut crc = Crc64::nvme();
+            crc.update(bytes);
+            crc.finish().to_string()
+        };
+        assert_eq!(one.parts[0].crc64_nvme, nvme_of(&data[..PART_SIZE as usize]));
+        assert_eq!(
+            one.parts[1],
+            Part {
+                offset: PART_SIZE,
+                length: 3,
+                md5: hex(&md5::Md5::digest(&data[PART_SIZE as usize..])),
+                crc64_nvme: nvme_of(&data[PART_SIZE as usize..]),
+            }
+        );
         assert!(one.etag.ends_with("-2"));
         // 内容 ETag 按定义重算一遍。
         let a: [u8; 16] = md5::Md5::digest(&data[..PART_SIZE as usize]).into();
