@@ -99,11 +99,11 @@ def run(command: str, timeout: int | None = None, ns: str = NS):
         body["timeout"] = timeout
     status, view = call("POST", "/execute?wait=30", body, ns=ns)
     assert status == 200, view
-    output = "".join(item["data"] for item in view["output"])
+    output = "".join(item["data"] for item in view["output_list"])
     while view["status"] == "running":
         status, view = call("GET", f"/execute/{view['id']}/status?wait=30&offset={view['next_offset']}", ns=ns)
         assert status == 200, view
-        output += "".join(item["data"] for item in view["output"])
+        output += "".join(item["data"] for item in view["output_list"])
     return view, output
 
 

@@ -138,14 +138,14 @@ impl Client {
             truncated |= next["truncated"].as_bool().unwrap_or(false);
             view = next;
         }
-        view["output"] = json!([{"stream": "combined", "data": output}]);
+        view["output_list"] = json!([{"stream": "combined", "data": output}]);
         view["truncated"] = json!(truncated);
         view
     }
 }
 
 fn output_of(view: &Value) -> String {
-    view["output"]
+    view["output_list"]
         .as_array()
         .into_iter()
         .flatten()
@@ -270,8 +270,9 @@ fn crc64(poly: u64, data: &[u8]) -> u64 {
     !crc
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+fn b64(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -424,8 +425,8 @@ async fn 文件接口_下载_指纹_证明_上传_删会话() {
     assert_eq!(stat["crc64_ecma"], crc64(0xC96C_5795_D787_0F42, b"hello world").to_string());
     assert_eq!(stat["crc64_nvme"], crc64(0x9A6C_9329_AC4B_C9B5, b"hello world").to_string());
     assert_eq!(stat["part_size"], 5 * 1024 * 1024);
-    assert_eq!(stat["parts"][0]["md5"], stat["md5"]);
-    assert_eq!(stat["parts"][0]["length"], 11);
+    assert_eq!(stat["part_list"][0]["md5"], stat["md5"]);
+    assert_eq!(stat["part_list"][0]["length"], 11);
     assert!(stat["modified"].as_u64().is_some());
 
     // 符号链接（文件或目录）一律拒绝；不存在 404；越出路径 400。
@@ -442,27 +443,27 @@ async fn 文件接口_下载_指纹_证明_上传_删会话() {
     let (status, body) = client.post("/files/stat", json!({"conversation_id": "c9", "path": "x"})).await;
     assert_eq!((status, body["error"].as_str()), (404, Some("conversation_not_found")));
 
-    // 持有证明：HMAC-SHA256(hex_decode(nonce), 段字节)。
-    let nonce = hex(b"Jefe");
+    // 持有证明：HMAC-SHA256(Base64 解码的 nonce, 段字节)，结果是标准 Base64。
+    let nonce = b64(b"Jefe");
     let (status, proof) = client
-        .post("/files/prove", json!({"conversation_id": "c1", "path": "out/a.txt", "nonce": nonce, "ranges": [{"offset": 0, "length": 11}, {"offset": 6, "length": 5}]}))
+        .post("/files/prove", json!({"conversation_id": "c1", "path": "out/a.txt", "nonce": nonce, "range_list": [{"offset": 0, "length": 11}, {"offset": 6, "length": 5}]}))
         .await;
     assert_eq!(status, 200, "{proof}");
     let expect = |data: &[u8]| {
         use hmac::Mac;
         let mut mac = <hmac::Hmac<sha2::Sha256> as Mac>::new_from_slice(b"Jefe").unwrap();
         mac.update(data);
-        hex(&mac.finalize().into_bytes())
+        b64(&mac.finalize().into_bytes())
     };
-    assert_eq!(proof["proofs"][0], expect(b"hello world"));
-    assert_eq!(proof["proofs"][1], expect(b"world"));
+    assert_eq!(proof["proof_list"][0], expect(b"hello world"));
+    assert_eq!(proof["proof_list"][1], expect(b"world"));
     assert_eq!(proof["size"], 11);
     let (status, body) = client
-        .post("/files/prove", json!({"conversation_id": "c1", "path": "out/a.txt", "nonce": nonce, "ranges": [{"offset": 8, "length": 4}]}))
+        .post("/files/prove", json!({"conversation_id": "c1", "path": "out/a.txt", "nonce": nonce, "range_list": [{"offset": 8, "length": 4}]}))
         .await;
     assert_eq!((status, body["error"].as_str()), (400, Some("range_invalid")), "{body}");
     let (status, _) = client
-        .post("/files/prove", json!({"conversation_id": "c1", "path": "out/a.txt", "nonce": "zz", "ranges": [{"offset": 0, "length": 1}]}))
+        .post("/files/prove", json!({"conversation_id": "c1", "path": "out/a.txt", "nonce": "%%%", "range_list": [{"offset": 0, "length": 1}]}))
         .await;
     assert_eq!(status, 400);
 
@@ -526,17 +527,17 @@ async fn 文件接口_下载_指纹_证明_上传_删会话() {
     let (status, uploaded) = client
         .post(
             "/files/upload",
-            json!({"conversation_id": "c1", "path": "out/a.txt", "parts": [
+            json!({"conversation_id": "c1", "path": "out/a.txt", "part_list": [
                 {"offset": 0, "length": 6, "url": format!("{up}/upload/1"), "headers": {"Content-Type": "text/plain", "x-test": "one", "Content-Length": "999"}},
                 {"offset": 6, "length": 5, "method": "put", "url": format!("{up}/upload/2"), "headers": {"x-test": "two"}}
             ]}),
         )
         .await;
     assert_eq!(status, 200, "{uploaded}");
-    assert_eq!(uploaded["parts"].as_array().unwrap().len(), 2);
-    assert_eq!(uploaded["parts"][0]["etag"], "\"etag-0\"");
-    assert_eq!(uploaded["parts"][1]["etag"], "\"etag-1\"");
-    assert_eq!(uploaded["parts"][1]["status"], 200);
+    assert_eq!(uploaded["part_list"].as_array().unwrap().len(), 2);
+    assert_eq!(uploaded["part_list"][0]["etag"], "\"etag-0\"");
+    assert_eq!(uploaded["part_list"][1]["etag"], "\"etag-1\"");
+    assert_eq!(uploaded["part_list"][1]["status"], 200);
     let received = uploads.lock().unwrap().clone();
     assert_eq!(received.len(), 2);
     assert_eq!(received[0].path, "/upload/1");
@@ -549,7 +550,7 @@ async fn 文件接口_下载_指纹_证明_上传_删会话() {
     let (status, failed) = client
         .post(
             "/files/upload",
-            json!({"conversation_id": "c1", "path": "out/a.txt", "parts": [
+            json!({"conversation_id": "c1", "path": "out/a.txt", "part_list": [
                 {"offset": 0, "length": 5, "url": format!("{up}/upload/3")},
                 {"offset": 5, "length": 6, "url": format!("{up}/upload-forbidden")},
                 {"offset": 0, "length": 1, "url": format!("{up}/upload/never")}
@@ -558,14 +559,14 @@ async fn 文件接口_下载_指纹_证明_上传_删会话() {
         .await;
     assert_eq!((status, failed["error"].as_str(), failed["failed_part"].as_u64()), (502, Some("upload_failed"), Some(1)), "{failed}");
     assert_eq!(failed["upstream_status"], 403);
-    assert_eq!(failed["parts"].as_array().unwrap().len(), 1, "带回已完成的第一段");
+    assert_eq!(failed["part_list"].as_array().unwrap().len(), 1, "带回已完成的第一段");
     assert_eq!(uploads.lock().unwrap().len(), 3, "第三段没有发出");
     let (status, body) = client
-        .post("/files/upload", json!({"conversation_id": "c1", "path": "out/a.txt", "parts": [{"offset": 10, "length": 2, "url": format!("{up}/upload/x")}]}))
+        .post("/files/upload", json!({"conversation_id": "c1", "path": "out/a.txt", "part_list": [{"offset": 10, "length": 2, "url": format!("{up}/upload/x")}]}))
         .await;
     assert_eq!((status, body["error"].as_str()), (400, Some("range_invalid")), "{body}");
     let (status, _) = client
-        .post("/files/upload", json!({"conversation_id": "c1", "path": "out/a.txt", "parts": [{"offset": 0, "length": 2, "method": "DELETE", "url": format!("{up}/upload/x")}]}))
+        .post("/files/upload", json!({"conversation_id": "c1", "path": "out/a.txt", "part_list": [{"offset": 0, "length": 2, "method": "DELETE", "url": format!("{up}/upload/x")}]}))
         .await;
     assert_eq!(status, 400);
 

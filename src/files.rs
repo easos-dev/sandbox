@@ -9,7 +9,7 @@
 //! 读到会话目录之外的路径；联网不受命令账号的私网限制（iptables 按 uid 区分），因为它只连助手交来的地址。
 
 use crate::account::Account;
-use crate::checksum::{self, Fingerprint, Proof, PART_SIZE};
+use crate::checksum::{Fingerprint, Proof, PART_SIZE};
 use crate::config::Config;
 use crate::mime;
 use crate::paths::{self, Workspace};
@@ -72,9 +72,10 @@ pub struct Range {
 pub struct ProveRequest {
     pub conversation_id: String,
     pub path: String,
-    /// HMAC 密钥，十六进制（File 挑战里的 nonce 就是十六进制）。
+    /// HMAC 密钥，标准 Base64（File 挑战里的 nonce）。
     pub nonce: String,
-    pub ranges: Vec<Range>,
+    /// 要证明的抽段，顺序即应答里 proof_list 的顺序（EasOS 契约命名：同类集合以 _list 结尾）。
+    pub range_list: Vec<Range>,
 }
 
 /// 上传计划里的一段：把文件 [offset, offset+length) 以 `method` 发到 `url`，带 `headers`。
@@ -96,7 +97,8 @@ pub struct UploadPart {
 pub struct UploadRequest {
     pub conversation_id: String,
     pub path: String,
-    pub parts: Vec<UploadPart>,
+    /// 上传计划的各段。
+    pub part_list: Vec<UploadPart>,
 }
 
 /// 文件接口的实现：两个 HTTP 客户端分别用于下载（跟随跳转）与上传（不跟随：流式请求体不能重放）。
@@ -243,22 +245,27 @@ impl Files {
             "crc64_ecma": digests.crc64_ecma,
             "crc64_nvme": digests.crc64_nvme,
             "part_size": PART_SIZE,
-            "parts": digests.parts,
+            "part_list": digests.parts,
             "modified": modified,
         }))
     }
 
-    /// 持有证明：每段 HMAC-SHA256(key = hex_decode(nonce), 段字节) 的十六进制，顺序与 ranges 相同。
+    /// 持有证明：每段 HMAC-SHA256(key = Base64 解码的 nonce, 段字节) 的标准 Base64，顺序与 range_list 相同。
     pub async fn prove(&self, account: &Account, req: ProveRequest) -> ApiResult<Value> {
         let rel = rel(&req.path)?;
-        let key = checksum::hex_decode(&req.nonce)
-            .filter(|k| !k.is_empty())
-            .ok_or_else(|| ApiError::bad_request("nonce 必须是非空的十六进制"))?;
-        if req.ranges.is_empty() || req.ranges.len() > PROVE_MAX_RANGES {
-            return Err(ApiError::bad_request(format!("ranges 需要 1～{PROVE_MAX_RANGES} 段")));
+        let key = {
+            use base64::Engine;
+            base64::engine::general_purpose::STANDARD
+                .decode(&req.nonce)
+                .ok()
+                .filter(|k| !k.is_empty())
+                .ok_or_else(|| ApiError::bad_request("nonce 必须是非空的标准 Base64"))?
+        };
+        if req.range_list.is_empty() || req.range_list.len() > PROVE_MAX_RANGES {
+            return Err(ApiError::bad_request(format!("range_list 需要 1～{PROVE_MAX_RANGES} 段")));
         }
         let mut total = 0u64;
-        for range in &req.ranges {
+        for range in &req.range_list {
             if range.length == 0 {
                 return Err(ApiError::bad_request("每段 length 至少为 1"));
             }
@@ -268,7 +275,7 @@ impl Files {
                 .ok_or_else(|| ApiError::bad_request(format!("抽段总长超过 {PROVE_MAX_TOTAL} 字节")))?;
         }
         let workspace = self.workspace(account, &req.conversation_id, false).await?;
-        let ranges = req.ranges;
+        let ranges = req.range_list;
         let (size, proofs, rel) = blocking(move || -> ApiResult<_> {
             let file = workspace.open_read(&rel).map_err(|e| io_error("读文件", e))?;
             let size = file.metadata().map_err(|e| io_error("读文件", e))?.len();
@@ -305,17 +312,17 @@ impl Files {
             Ok((size, proofs, rel))
         })
         .await??;
-        Ok(json!({"path": rel.join("/"), "size": size, "proofs": proofs}))
+        Ok(json!({"path": rel.join("/"), "size": size, "proof_list": proofs}))
     }
 
     /// 按计划逐段上传。任一段失败就停在那一段，应答里带已完成段的结果。
     pub async fn upload(&self, account: &Account, req: UploadRequest) -> ApiResult<Value> {
         let rel = rel(&req.path)?;
-        if req.parts.is_empty() || req.parts.len() > UPLOAD_MAX_PARTS {
-            return Err(ApiError::bad_request(format!("parts 需要 1～{UPLOAD_MAX_PARTS} 段")));
+        if req.part_list.is_empty() || req.part_list.len() > UPLOAD_MAX_PARTS {
+            return Err(ApiError::bad_request(format!("part_list 需要 1～{UPLOAD_MAX_PARTS} 段")));
         }
-        let mut plan = Vec::with_capacity(req.parts.len());
-        for (index, part) in req.parts.iter().enumerate() {
+        let mut plan = Vec::with_capacity(req.part_list.len());
+        for (index, part) in req.part_list.iter().enumerate() {
             let method = match part.method.as_deref().map(str::to_ascii_uppercase).as_deref() {
                 None | Some("PUT") => Method::PUT,
                 Some("POST") => Method::POST,
@@ -334,7 +341,7 @@ impl Files {
             .map_err(|e| io_error("读文件", e))?;
         let (file, rel) = file;
         let size = file.metadata().map_err(|e| io_error("读文件", e))?.len();
-        for (index, part) in req.parts.iter().enumerate() {
+        for (index, part) in req.part_list.iter().enumerate() {
             if part.offset.checked_add(part.length).is_none_or(|end| end > size) {
                 return Err(ApiError::new(
                     StatusCode::BAD_REQUEST,
@@ -344,8 +351,8 @@ impl Files {
                 .with("size", json!(size)));
             }
         }
-        let mut results: Vec<Value> = Vec::with_capacity(req.parts.len());
-        for (index, (part, (method, url, headers))) in req.parts.iter().zip(plan).enumerate() {
+        let mut results: Vec<Value> = Vec::with_capacity(req.part_list.len());
+        for (index, (part, (method, url, headers))) in req.part_list.iter().zip(plan).enumerate() {
             let body = reqwest::Body::wrap_stream(range_stream(file.clone(), part.offset, part.length));
             let sent = self
                 .uploader
@@ -364,7 +371,7 @@ impl Files {
                         format!("第 {} 段上传失败：{e}", index + 1),
                     )
                     .with("failed_part", json!(index))
-                    .with("parts", json!(results)))
+                    .with("part_list", json!(results)))
                 }
             };
             let status = response.status();
@@ -383,7 +390,7 @@ impl Files {
                 .with("failed_part", json!(index))
                 .with("upstream_status", json!(status.as_u16()))
                 .with("upstream_body", json!(body))
-                .with("parts", json!(results)));
+                .with("part_list", json!(results)));
             }
             results.push(json!({
                 "offset": part.offset,
@@ -392,7 +399,7 @@ impl Files {
                 "etag": etag,
             }));
         }
-        Ok(json!({"path": rel.join("/"), "size": size, "parts": results}))
+        Ok(json!({"path": rel.join("/"), "size": size, "part_list": results}))
     }
 
     /// 删整个会话目录。多用户模式以命名空间账号的身份执行 rm，它删不掉不属于自己的东西。

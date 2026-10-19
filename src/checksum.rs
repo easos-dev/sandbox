@@ -61,16 +61,6 @@ pub fn hex(bytes: &[u8]) -> String {
     out
 }
 
-/// 十六进制 → 字节；长度为奇数或含非十六进制字符时为 None。
-pub fn hex_decode(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
-        .collect()
-}
 
 /// 一个分片的位置与校验值。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -203,7 +193,8 @@ pub fn content_etag(part_md5s: &[[u8; 16]]) -> String {
     }
 }
 
-/// 持有证明的一段：HMAC-SHA256(key, 段字节) 的小写十六进制。可分多次喂字节。
+/// 持有证明的一段：HMAC-SHA256(key, 段字节) 的标准 Base64（带填充，44 字符）。可分多次喂字节。
+/// EasOS 规范：自己算出、只在接口里当字符串用的摘要一律标准 Base64，比十六进制短三成。
 pub struct Proof {
     mac: hmac::Hmac<sha2::Sha256>,
 }
@@ -219,7 +210,8 @@ impl Proof {
         self.mac.update(bytes);
     }
     pub fn finish(self) -> String {
-        hex(&self.mac.finalize().into_bytes())
+        use base64::Engine;
+        base64::engine::general_purpose::STANDARD.encode(self.mac.finalize().into_bytes())
     }
 }
 
@@ -302,9 +294,7 @@ mod tests {
         let mut proof = Proof::new(b"Jefe");
         proof.update(b"what do ya want ");
         proof.update(b"for nothing?");
-        assert_eq!(proof.finish(), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
-        assert_eq!(hex_decode("4a656665").unwrap(), b"Jefe");
-        assert!(hex_decode("abc").is_none());
-        assert!(hex_decode("zz").is_none());
+        // 十六进制向量 5bdcc146…ec3843 的标准 Base64 写法。
+        assert_eq!(proof.finish(), "W9zBRr9gdU5qBCQmCJV1x1oAPwidJzmDnexYuWTsOEM=");
     }
 }

@@ -243,7 +243,7 @@ fn render(
         "conversation_id": conversation_id,
         "status": status,
         "exit_code": exit_code,
-        "output": output,
+        "output_list": output,
         "next_offset": total,
         "total_bytes": total,
         "truncated": offset < tail_start,
@@ -676,14 +676,14 @@ mod tests {
         let v = render("x", "c", Status::Running, None, total, &tail, 0, 1, None, None);
         assert_eq!(v["truncated"], true);
         assert_eq!(v["next_offset"], total);
-        assert_eq!(v["output"][0]["data"].as_str().unwrap().len(), TAIL_BYTES);
+        assert_eq!(v["output_list"][0]["data"].as_str().unwrap().len(), TAIL_BYTES);
         // 调用方紧跟着上次的位置要：拿到增量，不算截断。
         let v = render("x", "c", Status::Running, None, total, &tail, total - 10, 1, None, None);
         assert_eq!(v["truncated"], false);
-        assert_eq!(v["output"][0]["data"].as_str().unwrap().len(), 10);
+        assert_eq!(v["output_list"][0]["data"].as_str().unwrap().len(), 10);
         // 没有新输出：output 为空数组。
         let v = render("x", "c", Status::Done, Some(0), total, &tail, total, 1, Some(2), None);
-        assert_eq!(v["output"].as_array().unwrap().len(), 0);
+        assert_eq!(v["output_list"].as_array().unwrap().len(), 0);
         assert_eq!(v["status"], "done");
         assert_eq!(v["output_path"], "out/x.txt");
         // 多字节字符被尾部边界切开时换成替换符，不 panic。
@@ -691,7 +691,7 @@ mod tests {
         let bytes = text.as_bytes();
         let cut = &bytes[bytes.len() - TAIL_BYTES..];
         let v = render("x", "c", Status::Running, None, bytes.len() as u64, cut, 0, 1, None, None);
-        assert!(v["output"][0]["data"].as_str().unwrap().ends_with("中文输出"));
+        assert!(v["output_list"][0]["data"].as_str().unwrap().ends_with("中文输出"));
     }
 
     #[test]

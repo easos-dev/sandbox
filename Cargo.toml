@@ -13,6 +13,7 @@ anyhow = "1"
 bytes = "1"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # 秒传持有证明：HMAC-SHA256(key = nonce, 段字节)，与 File 模块同一组 RustCrypto 实现与版本。
+base64 = "0.22"
 hmac = "0.12"
 sha2 = "0.10"
 md-5 = "0.10.6"
